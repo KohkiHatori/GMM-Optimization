@@ -47,35 +47,37 @@ The central HPC challenge in GMM is the **E-step**: for every data point and eve
 
 A GMM models a distribution as a weighted sum of K multivariate Gaussian components:
 
-```
-p(x) = sum_{k=1}^{K} pi_k * N(x | mu_k, Sigma_k)
-```
+$$
+p(x) = \sum_{k=1}^{K} \pi_k \mathcal{N}(x \mid \mu_k, \Sigma_k)
+$$
 
-where `pi_k` are mixing weights, `mu_k` are component means, and `Sigma_k` are covariance matrices.
+where $\pi_k$ are mixing weights, $\mu_k$ are component means, and $\Sigma_k$ are covariance matrices.
 
 ### EM Algorithm
 
 Training iterates between two steps until convergence (change in log-likelihood < epsilon):
 
-**E-step (Expectation):** Compute the responsibility of each component k for each data point n:
+**E-step (Expectation):** Compute the responsibility of each component $k$ for each data point $n$:
 
-```
-r_{nk} = pi_k * N(x_n | mu_k, Sigma_k) / sum_{j} pi_j * N(x_n | mu_j, Sigma_j)
-```
+$$
+r_{nk} = \frac{\pi_k \mathcal{N}(x_n \mid \mu_k, \Sigma_k)}{\sum_{j} \pi_j \mathcal{N}(x_n \mid \mu_j, \Sigma_j)}
+$$
 
-This requires, for each (n, k) pair:
-- Computing the Mahalanobis distance: `(x_n - mu_k)^T Sigma_k^{-1} (x_n - mu_k)`
-- Computing `log det(Sigma_k)`
+This requires, for each $(n, k)$ pair:
+- Computing the Mahalanobis distance: $(x_n - \mu_k)^T \Sigma_k^{-1} (x_n - \mu_k)$
+- Computing $\log \det(\Sigma_k)$
 - Applying the log-sum-exp trick for numerical stability
 
 **M-step (Maximization):** Update parameters using the responsibilities:
 
-```
-N_k    = sum_n r_{nk}
-mu_k   = (1/N_k) * sum_n r_{nk} * x_n
-Sigma_k = (1/N_k) * sum_n r_{nk} * (x_n - mu_k)(x_n - mu_k)^T
-pi_k   = N_k / N
-```
+$$
+\begin{aligned}
+N_k     &= \sum_n r_{nk} \\
+\mu_k   &= \frac{1}{N_k} \sum_n r_{nk} x_n \\
+\Sigma_k &= \frac{1}{N_k} \sum_n r_{nk} (x_n - \mu_k)(x_n - \mu_k)^T \\
+\pi_k   &= \frac{N_k}{N}
+\end{aligned}
+$$
 
 ### Complexity
 
@@ -144,11 +146,26 @@ gmm-hpc/
 
 ### BU SCC Cluster Modules
 
-Load the following modules before building:
+Depending on your allocated GPU, the required CUDA module and `nvcc` compiler options will vary. Reference the table below:
+
+#### GPU Model Mapping
+
+| Environment / GPU Model | Module Load Command | Compiler Options |
+|---|---|---|
+| **SCC (for project work):** | | |
+| Tesla V100-SXM2 | `module load cuda/10.0` | `-arch compute_70 -code sm_70` |
+| Tesla P100 | `module load cuda/9.2` | `-arch compute_60 -code sm_60` |
+| Tesla K40m | `module load cuda/9.2` | `-arch compute_35 -code sm_35` |
+| Tesla M2070 | `module load cuda/8.0` | `-arch compute_20 -code sm_20` |
+| **Grid (PHO 305,307) (for labs 7 and 8):** | | |
+| Quadro P1000 | `module load cuda` | `-arch sm_35` |
+| Quadro K610M | `module load cuda` | `-arch sm_30` |
+
+Load the following modules before building (adjust the `cuda` module version according to the table above, though `12.8` is the default for recent labs):
 
 ```bash
 module load gcc/12.2.0
-module load cuda/12.1
+module load cuda/12.8  # Update based on GPU model
 module load python3/3.10.12
 ```
 
@@ -168,10 +185,16 @@ pip install --user numpy scikit-learn matplotlib
 | CPU nodes | Intel Xeon (confirm with `lscpu` on your allocation) |
 | GPU nodes | NVIDIA (confirm with `nvidia-smi` on your allocation) |
 
+**Important:** On the SCC, access to GPUs is effectively provided only through an active browser-based Desktop session. Direct access via `ssh` followed by `qrsh` will not provide a fully usable GPU and should be avoided.
+
 To request an interactive GPU session on SCC:
+1. Visit `scc-ondemand.bu.edu` and use **Interactive Apps → Desktop** to launch a session.
+2. Once the Desktop session is ready, open a terminal window within it.
+3. Check available resources with `qgpus`.
+4. Request a GPU using a command like (e.g., for a P100 using the class project):
 
 ```bash
-qrsh -l gpus=1 -l gpu_c=6.0
+qrsh -l gpus=1 -l gpu_type=P100 -P ec527
 ```
 
 ---
@@ -199,9 +222,9 @@ make clean
 |---|---|
 | Serial | `gcc -O3 -march=native -ffast-math` |
 | OpenMP | `gcc -O3 -march=native -ffast-math -fopenmp` |
-| CUDA | `nvcc -O3 -arch=sm_80 --use_fast_math` |
+| CUDA | `nvcc -O3 -arch=compute_60 -code=sm_60 --use_fast_math` |
 
-> **Note:** Adjust `-arch=sm_XX` to match the GPU on your SCC allocation. Use `nvidia-smi` to find the GPU model and look up its compute capability.
+> **Note:** Adjust `-arch` and `-code` to match the GPU on your SCC allocation as per the GPU Model Mapping table above (e.g., `-arch compute_60 -code sm_60` for P100).
 
 ---
 
@@ -253,7 +276,7 @@ Straightforward C implementation of EM. Serves as the correctness reference and 
 
 Parallel strategies applied:
 - **E-step:** `#pragma omp parallel for` over data points — each thread independently computes responsibilities for its assigned points (no data dependencies across n)
-- **M-step:** Parallel reduction for N_k, mu_k, Sigma_k accumulations using `reduction` clause or thread-local accumulators with a final merge
+- **M-step:** Parallel reduction for $N_k$, $\mu_k$, $\Sigma_k$ accumulations using `reduction` clause or thread-local accumulators with a final merge
 - **Covariance updates:** Parallelized outer product accumulation over N
 
 Thread count controlled via `OMP_NUM_THREADS`. Scaling experiments run from 1 to max available cores.
@@ -264,7 +287,7 @@ Key kernel designs:
 
 **E-step kernel (`estep.cu`)**
 - One thread block per component k, one thread per data point n
-- Shared memory used to cache `mu_k` and the pre-computed Cholesky factor of `Sigma_k^{-1}`
+- Shared memory used to cache $\mu_k$ and the pre-computed Cholesky factor of $\Sigma_k^{-1}$
 - Each thread computes the Mahalanobis distance and log-density for its (n, k) pair
 - Log-sum-exp normalization done in a second pass
 
