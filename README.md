@@ -120,23 +120,25 @@ gmm-hpc/
 │       └── main_cuda.cu
 │
 ├── data/
-│   ├── generate_data.py       # Synthetic dataset generator
-│   ├── small/                 # Small test sets (N=1K)
-│   ├── medium/                # Medium test sets (N=10K)
-│   └── large/                 # Large benchmark sets (N=100K+)
+│   └── generate_data.py       # Synthetic dataset generator
 │
 ├── validation/
-│   ├── validate.py            # Compare output vs. scikit-learn reference
-│   └── requirements.txt       # Python deps (numpy, scikit-learn)
+│   └── validate.py            # Compare output vs. scikit-learn reference
+│
+├── visualization/
+│   ├── plot_clusters.py       # Plotly 3D scatter plots
+│   └── plot_timings.py        # Benchmark scaling charts
 │
 ├── results/
 │   ├── timing/                # Raw timing CSVs
 │   └── plots/                 # Performance plots
 │
 ├── scripts/
+│   ├── run_serial.sh          # E2E serial pipeline
 │   ├── run_all.sh             # Run all implementations and collect timings
 │   └── submit_scc.sh          # SCC job submission script
 │
+├── requirements.txt           # Python dependencies
 └── Makefile
 ```
 
@@ -171,10 +173,10 @@ module load python3/3.10.12
 
 Add these to your `~/.bashrc` or run at the start of each session.
 
-### Python (validation only)
+### Python (validation & visualization)
 
 ```bash
-pip install --user numpy scikit-learn matplotlib
+pip install --user -r requirements.txt
 ```
 
 ### Hardware Targets
@@ -230,16 +232,12 @@ make clean
 
 ## Running the Code
 
-### Generate synthetic data
+### Automated Serial Testing
+
+To automatically generate synthetic datasets, benchmark the Serial C baseline, cross-validate with scikit-learn, and generate Plotly performance plots, simply run the serial pipeline:
 
 ```bash
-python3 data/generate_data.py --n 10000 --dim 32 --components 8 --out data/medium/
-```
-
-### Serial
-
-```bash
-./bin/gmm_serial --data data/medium/data.bin --n 10000 --dim 32 --k 8 --iters 100
+./scripts/run_serial.sh
 ```
 
 ### OpenMP
