@@ -46,6 +46,8 @@ def main():
         title="GMM Execution Scaling (Wall Time vs Dataset Size)",
         xaxis_title="Dataset Size (N)",
         yaxis_title="Total Wall Time (Seconds)",
+        xaxis=dict(type='log'),
+        yaxis=dict(type='log'),
         hovermode="x unified"
     )
     
