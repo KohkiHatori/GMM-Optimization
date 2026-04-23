@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -O3 -march=native -ffast-math -Wall
+CFLAGS = -O3 -ffast-math -Wall
 
 # Targets
 all: serial openmp
