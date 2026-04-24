@@ -9,7 +9,7 @@ FIT_TOL=0.0001
 TOL=1.0
 
 # Directories
-CSV_OUT="results/timing/serial.csv"
+CSV_OUT="results/timing/cuda.csv"
 mkdir -p results/timing data scripts
 
 # Setup CSV Header
@@ -17,7 +17,7 @@ echo "N,D,K,WallTime" > "$CSV_OUT"
 
 echo "Compiling..."
 make clean
-make serial
+make cuda
 
 for N in "${N_ARRAY[@]}"; do
     echo "========================================"
@@ -26,16 +26,16 @@ for N in "${N_ARRAY[@]}"; do
 
     DATA_DIR="data/test_${N}"
     DATA_BIN="${DATA_DIR}/data.bin"
-    OUT_BIN="results/serial_out_${N}.bin"
+    OUT_BIN="results/cuda_out_${N}.bin"
 
     # 1. Generate Data
     echo "-> Generating Synthetic Data..."
     python3 data/generate_data.py --n $N --dim $DIM --components $K --out "$DATA_DIR"
 
-    # 2. Run GMM Serial & Capture Output
-    echo "-> Running Serial GMM..."
-    TEMP_LOG="results/timing/temp_n${N}.log"
-    ./bin/gmm_serial --data "$DATA_BIN" --init "${DATA_DIR}/init_means.bin" --n $N --dim $DIM --k $K --iters $ITERS --fit_tol $FIT_TOL --out "$OUT_BIN" > "$TEMP_LOG"
+    # 2. Run GMM CUDA & Capture Output
+    echo "-> Running CUDA GMM..."
+    TEMP_LOG="results/timing/temp_cuda_n${N}.log"
+    ./bin/gmm_cuda --data "$DATA_BIN" --init "${DATA_DIR}/init_means.bin" --n $N --dim $DIM --k $K --iters $ITERS --fit_tol $FIT_TOL --out "$OUT_BIN" > "$TEMP_LOG"
 
     # Read the file so the user can see execution status live
     cat "$TEMP_LOG"
@@ -55,7 +55,7 @@ for N in "${N_ARRAY[@]}"; do
 
     # 4. Generate 3D Interactive Plot
     echo "-> Generating 3D Plotly Visualization..."
-    python3 visualization/plot_clusters.py --data "$DATA_BIN" --our "$OUT_BIN" --true "$DATA_DIR/true_params.npz" --init "${DATA_DIR}/init_means.bin" --n $N --dim $DIM --k $K --title "Serial GMM Clusters (N=$N)" --out_html "results/plots/serial_clusters_${N}.html"
+    python3 visualization/plot_clusters.py --data "$DATA_BIN" --our "$OUT_BIN" --true "$DATA_DIR/true_params.npz" --init "${DATA_DIR}/init_means.bin" --n $N --dim $DIM --k $K --title "CUDA GMM Clusters (N=$N)" --out_html "results/plots/cuda_clusters_${N}.html"
 
     # Cleanup temp
     rm "$TEMP_LOG"
@@ -67,4 +67,4 @@ echo "Done! Timing results saved to $CSV_OUT"
 echo "========================================"
 echo "Generating Final Benchmark Scaling Graph"
 echo "========================================"
-python3 visualization/plot_timings.py --csv_dir results/timing/ --out_html results/plots/execution_scaling.html
+python3 visualization/plot_timings.py --csv_dir results/timing/ --out_html results/plots/execution_scaling_cuda.html

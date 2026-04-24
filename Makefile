@@ -4,7 +4,7 @@ CFLAGS = -O3 -ffast-math -Wall
 CUDA_FLAGS = -O3 -arch=sm_70
 
 # Targets
-all: serial openmp
+all: serial openmp cuda
 
 serial: src/serial/main.c src/serial/gmm.c
 	mkdir -p bin

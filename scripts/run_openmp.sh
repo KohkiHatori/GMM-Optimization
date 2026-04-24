@@ -7,7 +7,7 @@
 set -e
 
 # Configuration Parameters
-N_ARRAY=(1000 10000 50000)
+N_ARRAY=(100000 500000 1000000)
 THREAD_ARRAY=(1 2 4 8 16 24)
 DIM=32
 K=8
