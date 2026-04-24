@@ -147,7 +147,6 @@ __global__ void m_step_block_reduce_kernel(const float* soa_data, const float* r
 // Computes L_all (lower triangular) and log_det_L on the CPU
 void compute_cholesky_host(float* covariances, float* L_all, float* log_det_L, int K, int D) {
     for (int k = 0; k < K; k++) {
-        float* cov = &cov covariances[k * D * D]; // Typo fix needed! Wait, no this is a string literal writing. I should be careful.
         float* L = &L_all[k * D * D];
         float log_det = 0.0f;
         

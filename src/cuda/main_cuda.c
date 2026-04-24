@@ -3,7 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <cuda_runtime.h>
-#include "gmm_cuda.h"
+#include "gmm_cuda.cuh"
 
 double wakeup_delay()
 {
