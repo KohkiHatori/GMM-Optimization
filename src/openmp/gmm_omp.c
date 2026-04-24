@@ -46,13 +46,18 @@ static int cholesky(const float* A, float* L, int D) {
     return 1;
 }
 
-// Forward substitution to solve L * y = x
-// L is DxD lower triangular, x is Dx1 input, y is Dx1 output
-static void forward_sub(const float* L, const float* x, float* y, int D) {
+// Invert DxD lower triangular matrix L into L_inv
+static void invert_lower_triangular(const float* L, float* L_inv, int D) {
+    memset(L_inv, 0, D * D * sizeof(float));
     for (int i = 0; i < D; i++) {
-        float s = 0.0f;
-        for (int j = 0; j < i; j++) s += L[i*D+j] * y[j];
-        y[i] = (x[i] - s) / L[i*D+i];
+        L_inv[i*D+i] = 1.0f / L[i*D+i];
+        for (int j = 0; j < i; j++) {
+            float s = 0.0f;
+            for (int k = j; k < i; k++) {
+                s += L[i*D+k] * L_inv[k*D+j];
+            }
+            L_inv[i*D+j] = -s / L[i*D+i];
+        }
     }
 }
 
@@ -92,10 +97,14 @@ void gmm_train(float* data, int N, int D, int K,
 
     /* ---- Shared workspace ---- */
     float* responsibilities = (float*)malloc((size_t)N * K * sizeof(float));
-    float* L_all            = (float*)malloc((size_t)K * D * D * sizeof(float));
+    float* Sigma_inv_all    = (float*)malloc((size_t)K * D * D * sizeof(float));
     float* log_det_L        = (float*)malloc(K * sizeof(float));
     float* log_weights      = (float*)malloc(K * sizeof(float));
     float* L_tmp            = (float*)malloc(D * D * sizeof(float));
+    float* L_inv_tmp        = (float*)malloc(D * D * sizeof(float));
+
+    int max_threads = omp_get_max_threads();
+    float* thread_diffs = (float*)malloc(max_threads * D * sizeof(float));
 
     const float HALF_D_LOG_2PI = 0.5f * (float)D * logf(2.0f * PI);
     float log_likelihood = -1e9f;
@@ -121,19 +130,29 @@ void gmm_train(float* data, int N, int D, int K,
                 cholesky(&model->covariances[k*D*D], L_tmp, D); // Recompute
             }
 
-            memcpy(&L_all[k*D*D], L_tmp, D * D * sizeof(float));
-
             float ld = 0.0f;
             for (int d = 0; d < D; d++) ld += logf(L_tmp[d*D+d]);
             log_det_L[k] = ld;                       // log|Σ_k|^½ = Σ log L_kk
+
+            // Precompute inverse covariance matrix: Sigma_inv = L_inv^T * L_inv
+            invert_lower_triangular(L_tmp, L_inv_tmp, D);
+            for (int i = 0; i < D; i++) {
+                for (int j = 0; j < D; j++) {
+                    float s = 0.0f;
+                    int max_ij = (i > j) ? i : j;
+                    for (int m = max_ij; m < D; m++) {
+                        s += L_inv_tmp[m*D+i] * L_inv_tmp[m*D+j];
+                    }
+                    Sigma_inv_all[k*D*D + i*D + j] = s;
+                }
+            }
         }
 
         // E-STEP Core: evaluate density and normalize
         #pragma omp parallel reduction(+:log_likelihood)
         {
-            // Per-thread scratch buffers (allocated once, reused every iteration)
-            float* diff = (float*)malloc(D * sizeof(float));
-            float* y    = (float*)malloc(D * sizeof(float));
+            int tid = omp_get_thread_num();
+            float* diff = &thread_diffs[tid * D];
 
             #pragma omp for schedule(static)
             for (int n = 0; n < N; n++) {
@@ -145,12 +164,16 @@ void gmm_train(float* data, int N, int D, int K,
                     for (int d = 0; d < D; d++)
                         diff[d] = xn[d] - model->means[k*D+d];
 
-                    // Solve L_k · y = diff  →  y = L_k^{-1}(x-μ_k)
-                    forward_sub(&L_all[k*D*D], diff, y, D);
-
-                    // Mahalanobis² = ||y||²  (because ||L^{-1}(x-μ)||² = (x-μ)ᵀΣ^{-1}(x-μ))
+                    // Mahalanobis² = diff^T * Sigma_inv * diff
                     float maha = 0.0f;
-                    for (int d = 0; d < D; d++) maha += y[d] * y[d];
+                    for (int d1 = 0; d1 < D; d1++) {
+                        float s = 0.0f;
+                        #pragma omp simd
+                        for (int d2 = 0; d2 < D; d2++) {
+                            s += diff[d2] * Sigma_inv_all[k*D*D + d1*D + d2];
+                        }
+                        maha += diff[d1] * s;
+                    }
 
                     float log_rho = log_weights[k] - HALF_D_LOG_2PI
                                   - log_det_L[k] - 0.5f * maha;
@@ -170,9 +193,6 @@ void gmm_train(float* data, int N, int D, int K,
                 for (int k = 0; k < K; k++)
                     responsibilities[n*K+k] = expf(responsibilities[n*K+k] - lse);
             }
-
-            free(diff);
-            free(y);
         } // end E-step parallel region
 
         log_likelihood /= N;   // report per-point average
@@ -279,10 +299,12 @@ void gmm_train(float* data, int N, int D, int K,
     }
 
     free(responsibilities);
-    free(L_all);
+    free(Sigma_inv_all);
     free(log_det_L);
     free(log_weights);
     free(L_tmp);
+    free(L_inv_tmp);
+    free(thread_diffs);
 }
 
 //I/O
