@@ -1,0 +1,40 @@
+# Compiled Binaries
+bin/
+*.o
+*.out
+
+# Data and Results
+results/
+data/test_*/
+*.bin
+*.npz
+*.csv
+*.html
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+.pytest_cache/
+
+# OS Specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary Files
+*.log
+tmp/
