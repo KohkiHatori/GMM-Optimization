@@ -46,15 +46,18 @@ int cholesky(float* A, float* L, int D) {
     return 1;
 }
 
-// Forward substitution to solve L * y = x
-// L is DxD lower triangular, x is Dx1 input, y is Dx1 output
-void forward_sub(float* L, float* x, float* y, int D) {
+// Invert DxD lower triangular matrix L into L_inv
+void invert_lower_triangular(const float* L, float* L_inv, int D) {
+    memset(L_inv, 0, D * D * sizeof(float));
     for (int i = 0; i < D; i++) {
-        float sum = 0.0f;
+        L_inv[i*D+i] = 1.0f / L[i*D+i];
         for (int j = 0; j < i; j++) {
-            sum += L[i * D + j] * y[j];
+            float s = 0.0f;
+            for (int k = j; k < i; k++) {
+                s += L[i*D+k] * L_inv[k*D+j];
+            }
+            L_inv[i*D+j] = -s / L[i*D+i];
         }
-        y[i] = (x[i] - sum) / L[i * D + i];
     }
 }
 
@@ -104,12 +107,12 @@ void gmm_train(float* data, int N, int D, int K, int max_iters, float tol, float
     }
 
     float* responsibilities = (float*)malloc(N * K * sizeof(float));
-    float* L = (float*)malloc(D * D * sizeof(float)); 
+    float* Sigma_inv_all = (float*)malloc(K * D * D * sizeof(float));
     float* diff = (float*)malloc(D * sizeof(float));
-    float* y = (float*)malloc(D * sizeof(float));
     float* log_weights = (float*)malloc(K * sizeof(float));
     float* log_det_L = (float*)malloc(K * sizeof(float));
-    float* L_all = (float*)malloc(K * D * D * sizeof(float));
+    float* L_tmp = (float*)malloc(D * D * sizeof(float));
+    float* L_inv_tmp = (float*)malloc(D * D * sizeof(float));
     
     float log_likelihood = -1e9;
     const float HALF_D_LOG_2PI = 0.5f * (float)D * logf(2.0f * PI);
@@ -129,22 +132,32 @@ void gmm_train(float* data, int N, int D, int K, int max_iters, float tol, float
             }
             
             // Re-initialize L matrix for this K
-            for (int d = 0; d < D * D; d++) L[d] = 0.0f;
+            for (int d = 0; d < D * D; d++) L_tmp[d] = 0.0f;
             
-            if(!cholesky(&model->covariances[k * D * D], L, D)) {
+            if(!cholesky(&model->covariances[k * D * D], L_tmp, D)) {
                 // If singularity occurs, add strong Tikhonov regularization block
                 for (int d = 0; d < D; d++) {
                     model->covariances[k * D * D + d * D + d] += 1.0f; 
                 }
-                cholesky(&model->covariances[k * D * D], L, D); // Recompute
+                cholesky(&model->covariances[k * D * D], L_tmp, D); // Recompute
             }
             
-            // Save L for this cluster
-            for (int d = 0; d < D * D; d++) L_all[k * D * D + d] = L[d];
-            
             float log_det = 0.0f;
-            for (int d = 0; d < D; d++) log_det += logf(L[d * D + d]);
+            for (int d = 0; d < D; d++) log_det += logf(L_tmp[d * D + d]);
             log_det_L[k] = log_det; 
+
+            // Precompute inverse covariance matrix: Sigma_inv = L_inv^T * L_inv
+            invert_lower_triangular(L_tmp, L_inv_tmp, D);
+            for (int i = 0; i < D; i++) {
+                for (int j = 0; j < D; j++) {
+                    float s = 0.0f;
+                    int max_ij = (i > j) ? i : j;
+                    for (int m = max_ij; m < D; m++) {
+                        s += L_inv_tmp[m*D+i] * L_inv_tmp[m*D+j];
+                    }
+                    Sigma_inv_all[k*D*D + i*D + j] = s;
+                }
+            }
         }
 
         // E-STEP Core: evaluate density and normalize
@@ -157,13 +170,14 @@ void gmm_train(float* data, int N, int D, int K, int max_iters, float tol, float
                     diff[d] = data[n * D + d] - model->means[k * D + d];
                 }
                 
-                // L * y = diff
-                forward_sub(&L_all[k * D * D], diff, y, D);
-                
-                // Mahalanobis distance = y^T * y
+                // Mahalanobis² = diff^T * Sigma_inv * diff
                 float mahalanobis_sq = 0.0f;
-                for (int d = 0; d < D; d++) {
-                    mahalanobis_sq += y[d] * y[d];
+                for (int d1 = 0; d1 < D; d1++) {
+                    float s = 0.0f;
+                    for (int d2 = 0; d2 < D; d2++) {
+                        s += diff[d2] * Sigma_inv_all[k*D*D + d1*D + d2];
+                    }
+                    mahalanobis_sq += diff[d1] * s;
                 }
                 
                 float log_rho = log_weights[k] - HALF_D_LOG_2PI - log_det_L[k] - 0.5f * mahalanobis_sq;
@@ -255,12 +269,12 @@ void gmm_train(float* data, int N, int D, int K, int max_iters, float tol, float
     }
 
     free(responsibilities);
-    free(L);
+    free(Sigma_inv_all);
     free(diff);
-    free(y);
     free(log_weights);
     free(log_det_L);
-    free(L_all);
+    free(L_tmp);
+    free(L_inv_tmp);
 }
 
 void gmm_save(gmm_model* model, int K, int D, const char* filepath) {
