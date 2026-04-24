@@ -41,7 +41,7 @@ for T in "${THREAD_ARRAY[@]}"; do
         DATA_BIN="${DATA_DIR}/data.bin"
         INIT_BIN="${DATA_DIR}/init_means.bin"
         OUT_BIN="results/omp_out_${N}_t${T}.bin"
-        TEMP_LOG="results/timing/tmp_omp_n${N}_t${T}.log"
+        TEMP_LOG="/tmp/gmm_omp_n${N}_t${T}_$$.log"
 
         # Generate data if missing
         if [ ! -f "$DATA_BIN" ]; then

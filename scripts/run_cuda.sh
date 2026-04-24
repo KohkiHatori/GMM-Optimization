@@ -36,7 +36,7 @@ for N in "${N_ARRAY[@]}"; do
 
     # 2. Run GMM CUDA & Capture Output
     echo "-> Running CUDA GMM..."
-    TEMP_LOG="results/timing/temp_cuda_n${N}.log"
+    TEMP_LOG="/tmp/temp_cuda_n${N}_$$.log"
     ./bin/gmm_cuda --data "$DATA_BIN" --init "${DATA_DIR}/init_means.bin" --n $N --dim $DIM --k $K --iters $ITERS --fit_tol $FIT_TOL --out "$OUT_BIN" > "$TEMP_LOG"
 
     # Read the file so the user can see execution status live
