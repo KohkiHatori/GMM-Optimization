@@ -177,41 +177,97 @@ void gmm_train(float* data, int N, int D, int K,
 
         log_likelihood /= N;   // report per-point average
 
-        // M-STEP
-        #pragma omp parallel for schedule(static)
-        for (int k = 0; k < K; k++) {
-            // Effective count for component k
-            float Nk = 0.0f;
-            for (int n = 0; n < N; n++) Nk += responsibilities[n*K+k];
+        // M-STEP Optimized: Inverted loops for better cache locality and N-parallelism
+        memset(model->weights, 0, K * sizeof(float));
+        memset(model->means, 0, K * D * sizeof(float));
+        memset(model->covariances, 0, K * D * D * sizeof(float));
 
-            float inv_Nk = (Nk > 1e-10f) ? 1.0f / Nk : 0.0f;
+        // Pass 1: Accumulate Nk and Means (Parallel over N)
+        #pragma omp parallel
+        {
+            float* local_Nk = (float*)calloc(K, sizeof(float));
+            float* local_means = (float*)calloc(K * D, sizeof(float));
 
-            // Update weights
-            model->weights[k] = Nk / N;
-
-            // Update means
-            float* mu_k = &model->means[k*D];
-            for (int d = 0; d < D; d++) {
-                float acc = 0.0f;
-                for (int n = 0; n < N; n++)
-                    acc += responsibilities[n*K+k] * data[n*D+d];
-                mu_k[d] = acc * inv_Nk;
-            }
-
-            // Update covariances
-            float* cov_k = &model->covariances[k*D*D];
-            for (int d1 = 0; d1 < D; d1++) {
-                for (int d2 = 0; d2 < D; d2++) {
-                    float acc = 0.0f;
-                    for (int n = 0; n < N; n++) {
-                        float v1 = data[n*D+d1] - mu_k[d1];
-                        float v2 = data[n*D+d2] - mu_k[d2];
-                        acc += responsibilities[n*K+k] * v1 * v2;
+            #pragma omp for nowait
+            for (int n = 0; n < N; n++) {
+                for (int k = 0; k < K; k++) {
+                    float resp = responsibilities[n * K + k];
+                    local_Nk[k] += resp;
+                    for (int d = 0; d < D; d++) {
+                        local_means[k * D + d] += resp * data[n * D + d];
                     }
-                    cov_k[d1*D+d2] = acc * inv_Nk;
                 }
             }
-        } // end M-step parallel region
+
+            #pragma omp critical
+            {
+                for (int k = 0; k < K; k++) {
+                    model->weights[k] += local_Nk[k];
+                    for (int d = 0; d < D; d++) {
+                        model->means[k * D + d] += local_means[k * D + d];
+                    }
+                }
+            }
+            free(local_Nk);
+            free(local_means);
+        }
+
+        // Finalize means and calculate inverse Nk for covariance pass
+        float* inv_Nk_all = (float*)malloc(K * sizeof(float));
+        for (int k = 0; k < K; k++) {
+            float Nk = model->weights[k];
+            inv_Nk_all[k] = (Nk > 1e-10f) ? 1.0f / Nk : 0.0f;
+            model->weights[k] = Nk / N; // Update global weights
+            for (int d = 0; d < D; d++) {
+                model->means[k * D + d] *= inv_Nk_all[k];
+            }
+        }
+
+        // Pass 2: Accumulate Covariances (Parallel over N)
+        #pragma omp parallel
+        {
+            float* local_cov = (float*)calloc(K * D * D, sizeof(float));
+            #pragma omp for nowait
+            for (int n = 0; n < N; n++) {
+                const float* x_n = &data[n * D];
+                for (int k = 0; k < K; k++) {
+                    float resp = responsibilities[n * K + k];
+                    if (resp < 1e-6f) continue; // Skip negligible contributions
+                    const float* mu_k = &model->means[k * D];
+                    for (int d1 = 0; d1 < D; d1++) {
+                        float diff1 = x_n[d1] - mu_k[d1];
+                        for (int d2 = 0; d2 <= d1; d2++) { // Lower triangle only
+                            local_cov[k * D * D + d1 * D + d2] += resp * diff1 * (x_n[d2] - mu_k[d2]);
+                        }
+                    }
+                }
+            }
+
+            #pragma omp critical
+            {
+                for (int k = 0; k < K; k++) {
+                    for (int d1 = 0; d1 < D; d1++) {
+                        for (int d2 = 0; d2 <= d1; d2++) {
+                            model->covariances[k * D * D + d1 * D + d2] += local_cov[k * D * D + d1 * D + d2];
+                        }
+                    }
+                }
+            }
+            free(local_cov);
+        }
+
+        // Finalize covariances (scale and symmetrize)
+        for (int k = 0; k < K; k++) {
+            float inv_Nk = inv_Nk_all[k];
+            for (int d1 = 0; d1 < D; d1++) {
+                for (int d2 = 0; d2 <= d1; d2++) {
+                    float val = model->covariances[k * D * D + d1 * D + d2] * inv_Nk;
+                    model->covariances[k * D * D + d1 * D + d2] = val;
+                    model->covariances[k * D * D + d2 * D + d1] = val; // Symmetrize
+                }
+            }
+        }
+        free(inv_Nk_all);
 
         // Output progress
         printf("  [Iter %3d] Log Likelihood: %f\n", iter, log_likelihood);
