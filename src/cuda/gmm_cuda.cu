@@ -353,7 +353,6 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
             }
         }
 
-        double h_ll_sum;
         CUDA_CHECK(cudaMemcpy(&h_ll_sum, d_ll_sum, sizeof(double), cudaMemcpyDeviceToHost));
         log_likelihood = h_ll_sum / N;
         printf("  [Iter %3d] Log Likelihood: %lf\n", iter, log_likelihood);
