@@ -29,10 +29,11 @@ __global__ void transpose_aos_to_soa_kernel(const float* aos_data, float* soa_da
     }
 }
 
-// Kernel 2: E-Step (Compute Responsibilities)
+// Kernel 2: E-Step (Compute Responsibilities and Log-Likelihood)
 __global__ void e_step_kernel(const float* soa_data, const float* means, 
                               const float* L_all, const float* log_det_L, 
-                              const float* log_weights, float* responsibilities, 
+                              const float* log_weights, float* responsibilities,
+                              double* log_likelihood_sum,
                               int N, int D, int K) {
     int n = blockIdx.x * blockDim.x + threadIdx.x;
     if (n >= N) return;
@@ -77,6 +78,8 @@ __global__ void e_step_kernel(const float* soa_data, const float* means,
         sum_exp += expf(responsibilities[n * K + k] - max_log_rho);
     }
     float lse = max_log_rho + logf(sum_exp);
+
+    atomicAdd(log_likelihood_sum, (double)lse);
 
     for (int k = 0; k < K; k++) {
         responsibilities[n * K + k] = expf(responsibilities[n * K + k] - lse);
@@ -247,6 +250,7 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
     float *d_data_aos, *d_data_soa, *d_resp;
     float *d_means, *d_L_all, *d_log_det_L, *d_log_weights;
     float *d_partial_Nk, *d_partial_mu, *d_partial_Sigma;
+    double *d_ll_sum;
 
     size_t data_size = N * D * sizeof(float);
     size_t resp_size = N * K * sizeof(float);
@@ -259,6 +263,7 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
     CUDA_CHECK(cudaMalloc(&d_L_all, K * D * D * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_log_det_L, K * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_log_weights, K * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_ll_sum, sizeof(double)));
 
     CUDA_CHECK(cudaMalloc(&d_partial_Nk, K * blocks_per_cluster * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_partial_mu, K * blocks_per_cluster * D * sizeof(float)));
@@ -281,9 +286,14 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
     dim3 m_step_grid(K, blocks_per_cluster);
     int m_step_shared_mem = (1 + D + D * D) * sizeof(float);
 
+    double log_likelihood = -1e18;
+
     // 5. Training Loop
     for (int iter = 0; iter < max_iters; iter++) {
-        
+        double prev_ll = log_likelihood;
+        double h_ll_sum = 0.0;
+        CUDA_CHECK(cudaMemcpy(d_ll_sum, &h_ll_sum, sizeof(double), cudaMemcpyHostToDevice));
+
         // --- HOST PREP (Cholesky) ---
         compute_cholesky_host(model->covariances, h_L_all, h_log_det_L, K, D);
         for (int k = 0; k < K; k++) {
@@ -297,7 +307,7 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
 
         // --- E-STEP ---
         e_step_kernel<<<blocks_per_grid_e, threads_per_block_e>>>(
-            d_data_soa, d_means, d_L_all, d_log_det_L, d_log_weights, d_resp, N, D, K);
+            d_data_soa, d_means, d_L_all, d_log_det_L, d_log_weights, d_resp, d_ll_sum, N, D, K);
         CUDA_CHECK(cudaDeviceSynchronize());
 
         // --- M-STEP ---
@@ -342,6 +352,16 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
                 }
             }
         }
+
+        double h_ll_sum;
+        CUDA_CHECK(cudaMemcpy(&h_ll_sum, d_ll_sum, sizeof(double), cudaMemcpyDeviceToHost));
+        log_likelihood = h_ll_sum / N;
+        printf("  [Iter %3d] Log Likelihood: %lf\n", iter, log_likelihood);
+
+        if (iter > 0 && fabs(log_likelihood - prev_ll) < (double)tol) {
+            printf("\nConverged at iteration %d (LL delta < %.1e).\n", iter, tol);
+            break;
+        }
     }
 
     // 6. Cleanup
@@ -358,6 +378,7 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
     CUDA_CHECK(cudaFree(d_L_all));
     CUDA_CHECK(cudaFree(d_log_det_L));
     CUDA_CHECK(cudaFree(d_log_weights));
+    CUDA_CHECK(cudaFree(d_ll_sum));
     CUDA_CHECK(cudaFree(d_partial_Nk));
     CUDA_CHECK(cudaFree(d_partial_mu));
     CUDA_CHECK(cudaFree(d_partial_Sigma));

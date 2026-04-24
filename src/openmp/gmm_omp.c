@@ -107,12 +107,12 @@ void gmm_train(float* data, int N, int D, int K,
     float* thread_diffs = (float*)malloc(max_threads * D * sizeof(float));
 
     const float HALF_D_LOG_2PI = 0.5f * (float)D * logf(2.0f * PI);
-    float log_likelihood = -1e9f;
+    double log_likelihood = -1e18;
 
     // EM LOOP
     for (int iter = 0; iter < max_iters; iter++) {
-        float prev_ll = log_likelihood;
-        log_likelihood = 0.0f;
+        double prev_ll = log_likelihood;
+        log_likelihood = 0.0;
 
         // E-STEP Preparations: invert covariances and compute determinants
         for (int k = 0; k < K; k++) {
@@ -187,7 +187,7 @@ void gmm_train(float* data, int N, int D, int K,
                     sum_exp += expf(responsibilities[n*K+k] - max_log_rho);
                 float lse = max_log_rho + logf(sum_exp);
 
-                log_likelihood += lse;               // reduced across threads
+                log_likelihood += (double)lse;               // reduced across threads
 
                 // Convert log-responsibilities to normalised probabilities
                 for (int k = 0; k < K; k++)
@@ -290,9 +290,9 @@ void gmm_train(float* data, int N, int D, int K,
         free(inv_Nk_all);
 
         // Output progress
-        printf("  [Iter %3d] Log Likelihood: %f\n", iter, log_likelihood);
+        printf("  [Iter %3d] Log Likelihood: %lf\n", iter, log_likelihood);
 
-        if (iter > 0 && fabsf(log_likelihood - prev_ll) < tol) {
+        if (iter > 0 && fabs(log_likelihood - prev_ll) < (double)tol) {
             printf("\nConverged at iteration %d (LL delta < %.1e).\n", iter, tol);
             break;
         }

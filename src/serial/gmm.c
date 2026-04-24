@@ -114,13 +114,13 @@ void gmm_train(float* data, int N, int D, int K, int max_iters, float tol, float
     float* L_tmp = (float*)malloc(D * D * sizeof(float));
     float* L_inv_tmp = (float*)malloc(D * D * sizeof(float));
     
-    float log_likelihood = -1e9;
+    double log_likelihood = -1e18;
     const float HALF_D_LOG_2PI = 0.5f * (float)D * logf(2.0f * PI);
 
     // EM LOOP
     for (int iter = 0; iter < max_iters; iter++) {
-        float prev_log_likelihood = log_likelihood;
-        log_likelihood = 0.0f;
+        double prev_log_likelihood = log_likelihood;
+        log_likelihood = 0.0;
         
         // E-STEP Preparations: invert covariances and compute determinants
         for (int k = 0; k < K; k++) {
@@ -260,9 +260,9 @@ void gmm_train(float* data, int N, int D, int K, int max_iters, float tol, float
         free(inv_Nk_all);
         
         // Output progress
-        printf("  [Iter %3d] Log Likelihood: %f\n", iter, log_likelihood);
+        printf("  [Iter %3d] Log Likelihood: %lf\n", iter, log_likelihood);
         
-        if (iter > 0 && fabsf(log_likelihood - prev_log_likelihood) < tol) {
+        if (iter > 0 && fabs(log_likelihood - prev_log_likelihood) < (double)tol) {
             printf("\nConverged at iteration %d (LL Delta < %.1e).\n", iter, tol);
             break;
         }
