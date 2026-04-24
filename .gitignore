@@ -21,7 +21,7 @@ venv/
 .pytest_cache/
 
 # OS Specific
-.DS_Store
+**/.DS_Store
 .DS_Store?
 ._*
 .Spotlight-V100
