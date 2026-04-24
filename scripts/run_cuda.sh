@@ -29,8 +29,10 @@ for N in "${N_ARRAY[@]}"; do
     OUT_BIN="results/cuda_out_${N}.bin"
 
     # 1. Generate Data
-    echo "-> Generating Synthetic Data..."
-    python3 data/generate_data.py --n $N --dim $DIM --components $K --out "$DATA_DIR"
+    if [ ! -f "$DATA_BIN" ]; then
+        echo "-> Generating Synthetic Data..."
+        python3 data/generate_data.py --n $N --dim $DIM --components $K --out "$DATA_DIR"
+    fi
 
     # 2. Run GMM CUDA & Capture Output
     echo "-> Running CUDA GMM..."
