@@ -5,7 +5,7 @@ bin/
 
 # Data and Results
 data/test_*/
-data/hepmass/
+data/grid_*/
 *.bin
 *.npz
 
