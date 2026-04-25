@@ -100,26 +100,35 @@ Once parallel correctness was achieved, several underlying hardware optimization
 \end{enumerate}
 
 \section{Experiments and Results}
-% Present your experiments and results. Use graphs and tables to show scaling and performance across serial, OpenMP, and CUDA implementations.
+In this section, we evaluate the performance of our serial, OpenMP, and CUDA implementations across a broad parameter grid. The experiments were conducted on a dataset of $N=500,000$ points, varying the dimensionality ($D$) from 4 to 32 and the number of clusters ($K$) from 2 to 96.
 
-\subsection{CPU vs GPU Performance Analysis}
-% Specifically from CPU_vs_GPU_Performance.md
-During benchmarking, it was observed that the CUDA implementation running on a Tesla P100 GPU is slower than the OpenMP implementation running on a 16-thread or 24-thread CPU for the specific configuration of $D=32$ and $K=8$. This outcome can be attributed to the following architectural factors:
+\subsection{CPU vs GPU Scaling Analysis}
+Our benchmarking results reveal a significant performance "cross-over point" between the 32-thread OpenMP CPU implementation and the CUDA GPU implementation (Tesla P100). As shown in the experimental data, the optimal hardware choice depends strictly on the computational complexity of the GMM configuration.
 
 \begin{itemize}
-    \item \textbf{Memory-Bound Workload:} GMM training is highly memory-bandwidth bound. The GPU streams the entire dataset ($N \times D$) from HBM2 into SMs three times per iteration (E-Step, M-Step Means, M-Step Covariances). Conversely, modern CPUs with large L3 caches and advanced hardware prefetchers mask memory latency efficiently, keeping the data close to compute units.
-    \item \textbf{Synchronization and PCIe Overhead:} The EM iterative loop requires constant CPU/GPU synchronization. Moving partial sums, doing Cholesky decomposition on the CPU, and sending data back via the PCIe bus imposes severe latency, compared to a pure CPU process that uses registers and L1 cache across steps.
-    \item \textbf{Shared Memory Serialization:} In early CUDA implementations, using \texttt{atomicAdd} by up to 256 threads into the same shared memory locations (e.g., updating \texttt{s\_Sigma}) causes massive serialization and bank conflicts. OpenMP threads, however, allocate private \texttt{local\_cov} arrays and are completely lock-free until the end.
-    \item \textbf{CPU Vectorization "Magic Number":} A dimension of $D=32$ is highly optimal for modern CPUs with AVX2 or AVX-512 instructions. Since $32 \times 4 \text{ bytes} = 128 \text{ bytes}$, the compiler can completely unroll the loops using vectorized instructions processing the dimensions perfectly in very few clock cycles.
+    \item \textbf{Low Complexity and Overhead:} For small values of $K$ and $D$, the OpenMP implementation consistently outperforms CUDA. For instance, at $D=4, K=2$, OpenMP completes in 0.011s compared to CUDA's 0.098s. This is primarily due to the fixed overhead of CUDA kernel launches and the fact that the small model fits entirely within the CPU's L2/L3 caches.
+    \item \textbf{The Cross-over Point:} As $D$ and $K$ increase, the workload transitions from being memory-latency bound to compute-throughput bound. 
+    \begin{itemize}
+        \item For $D=8$, the cross-over occurs at $K=8$, where CUDA begins to lead.
+        \item For $D=32$, OpenMP holds its advantage until $K \approx 12$, after which CUDA's massive parallelism takes over.
+    \end{itemize}
+    \item \textbf{High Complexity Scaling:} At high cluster counts ($K \ge 32$), the GPU's superior throughput becomes dominant. At the maximum tested configuration ($D=32, K=96$), the CUDA implementation achieves a wall time of \textbf{9.3s}, outperforming the 32-thread OpenMP implementation (\textbf{25.5s}) by a factor of \textbf{2.7x}, and the serial reference (\textbf{88.8s}) by nearly \textbf{10x}.
 \end{itemize}
 
-\subsection{Future Work for GPU Acceleration}
-To achieve better absolute performance on the GPU that surpasses highly optimized 24-thread CPU performance, the following architectural redesigns would be necessary:
+\subsection{Architectural Performance Factors}
+The observed scaling behavior is driven by several competing architectural factors:
+\begin{itemize}
+    \item \textbf{Arithmetic Intensity:} At low $K$, the ratio of computation to memory access is low, making the GPU's memory bandwidth and synchronization overhead the limiting factors. As $K$ increases, the $O(N \cdot K \cdot D^2)$ operations dominate, allowing the GPU to hide memory latency through massive thread concurrency.
+    \item \textbf{CPU Vectorization Efficiency:} For $D=32$, the CPU utilizes AVX-512 instructions to process the dimensionality loop with extreme efficiency. This keeps the CPU competitive even at moderate complexities.
+    \item \textbf{Atomic Contention:} In the CUDA M-Step, `atomicAdd` operations face high contention at low $K$ as many threads attempt to update the same cluster parameters. As $K$ increases, these updates are spread across more memory addresses, paradoxically reducing contention and improving the GPU's scaling efficiency.
+\end{itemize}
+
+\section{Future Work for GPU Acceleration}
+To further optimize the CUDA implementation and move the cross-over point to lower complexities, the following architectural redesigns are proposed:
 \begin{enumerate}
-    \item \textbf{Kernel Fusion:} Combine the E-step and M-step into a single kernel to reduce global memory reads to exactly once per iteration.
-    \item \textbf{GPU Cholesky Base:} Offload the Cholesky decomposition completely onto the GPU (using cuSOLVER) to eliminate iteration-blocking \texttt{cudaMemcpy} calls.
-    \item \textbf{Warp-Level Reductions:} Replace shared-memory `atomicAdd` calls with warp shuffle instructions (e.g., \texttt{\_\_shfl\_down\_sync}) to perform lock-free parallel reductions within the SMs.
-    \item \textbf{Workload Scale Up:} Test with significantly larger parameters such as $K=64$ and $D=128$, which would exceed CPU cache thresholds and showcase the true massive parallel computational strength of the GPU.
+    \item \textbf{Kernel Fusion:} Combining the E-step and M-step kernels would reduce the number of passes over the $N \times D$ dataset from three to one, significantly easing the memory bandwidth bottleneck.
+    \item \textbf{GPU-Native Cholesky:} Offloading the Cholesky decomposition to cuSOLVER or a custom block-level kernel would eliminate the expensive iteration-blocking \texttt{cudaMemcpy} calls and CPU-GPU synchronization.
+    \item \textbf{Warp-Level Reductions:} Utilizing warp-shuffle instructions (\texttt{\_\_shfl\_down\_sync}) for local reductions within the Streaming Multiprocessor would eliminate the reliance on \texttt{atomicAdd} in shared memory, further boosting throughput in the M-Step.
 \end{enumerate}
 
 \section{Conclusion}
