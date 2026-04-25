@@ -55,7 +55,9 @@ def main():
     for j in range(len(csv_files)):
         fig.update_xaxes(title_text="K", row=1, col=j+1)
     
-    os.makedirs(os.path.dirname(args.out_html), exist_ok=True)
+    out_dir = os.path.dirname(args.out_html)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     fig.write_html(args.out_html)
     print(f"Grid analysis saved to {args.out_html}")
 
