@@ -198,23 +198,23 @@ void gmm_train(float* data, int N, int D, int K,
         log_likelihood /= N;   // report per-point average
 
         // M-STEP Optimized: Inverted loops for better cache locality and N-parallelism
-        memset(model->weights, 0, K * sizeof(float));
-        memset(model->means, 0, K * D * sizeof(float));
-        memset(model->covariances, 0, K * D * D * sizeof(float));
+        double* acc_weights = (double*)calloc(K, sizeof(double));
+        double* acc_means = (double*)calloc(K * D, sizeof(double));
+        double* acc_covs = (double*)calloc(K * D * D, sizeof(double));
 
         // Pass 1: Accumulate Nk and Means (Parallel over N)
         #pragma omp parallel
         {
-            float* local_Nk = (float*)calloc(K, sizeof(float));
-            float* local_means = (float*)calloc(K * D, sizeof(float));
+            double* local_Nk = (double*)calloc(K, sizeof(double));
+            double* local_means = (double*)calloc(K * D, sizeof(double));
 
             #pragma omp for nowait
             for (int n = 0; n < N; n++) {
                 for (int k = 0; k < K; k++) {
-                    float resp = responsibilities[n * K + k];
+                    double resp = (double)responsibilities[n * K + k];
                     local_Nk[k] += resp;
                     for (int d = 0; d < D; d++) {
-                        local_means[k * D + d] += resp * data[n * D + d];
+                        local_means[k * D + d] += resp * (double)data[n * D + d];
                     }
                 }
             }
@@ -222,9 +222,9 @@ void gmm_train(float* data, int N, int D, int K,
             #pragma omp critical
             {
                 for (int k = 0; k < K; k++) {
-                    model->weights[k] += local_Nk[k];
+                    acc_weights[k] += local_Nk[k];
                     for (int d = 0; d < D; d++) {
-                        model->means[k * D + d] += local_means[k * D + d];
+                        acc_means[k * D + d] += local_means[k * D + d];
                     }
                 }
             }
@@ -233,31 +233,31 @@ void gmm_train(float* data, int N, int D, int K,
         }
 
         // Finalize means and calculate inverse Nk for covariance pass
-        float* inv_Nk_all = (float*)malloc(K * sizeof(float));
+        double* inv_Nk_all = (double*)malloc(K * sizeof(double));
         for (int k = 0; k < K; k++) {
-            float Nk = model->weights[k];
-            inv_Nk_all[k] = (Nk > 1e-10f) ? 1.0f / Nk : 0.0f;
-            model->weights[k] = Nk / N; // Update global weights
+            double Nk = acc_weights[k];
+            inv_Nk_all[k] = (Nk > 1e-10) ? 1.0 / Nk : 0.0;
+            model->weights[k] = (float)(Nk / N); // Update global weights
             for (int d = 0; d < D; d++) {
-                model->means[k * D + d] *= inv_Nk_all[k];
+                model->means[k * D + d] = (float)(acc_means[k * D + d] * inv_Nk_all[k]);
             }
         }
 
         // Pass 2: Accumulate Covariances (Parallel over N)
         #pragma omp parallel
         {
-            float* local_cov = (float*)calloc(K * D * D, sizeof(float));
+            double* local_cov = (double*)calloc(K * D * D, sizeof(double));
             #pragma omp for nowait
             for (int n = 0; n < N; n++) {
                 const float* x_n = &data[n * D];
                 for (int k = 0; k < K; k++) {
-                    float resp = responsibilities[n * K + k];
-                    if (resp < 1e-6f) continue; // Skip negligible contributions
+                    double resp = (double)responsibilities[n * K + k];
+                    if (resp < 1e-6) continue; // Skip negligible contributions
                     const float* mu_k = &model->means[k * D];
                     for (int d1 = 0; d1 < D; d1++) {
-                        float diff1 = x_n[d1] - mu_k[d1];
+                        double diff1 = (double)x_n[d1] - (double)mu_k[d1];
                         for (int d2 = 0; d2 <= d1; d2++) { // Lower triangle only
-                            local_cov[k * D * D + d1 * D + d2] += resp * diff1 * (x_n[d2] - mu_k[d2]);
+                            local_cov[k * D * D + d1 * D + d2] += resp * diff1 * ((double)x_n[d2] - (double)mu_k[d2]);
                         }
                     }
                 }
@@ -268,7 +268,7 @@ void gmm_train(float* data, int N, int D, int K,
                 for (int k = 0; k < K; k++) {
                     for (int d1 = 0; d1 < D; d1++) {
                         for (int d2 = 0; d2 <= d1; d2++) {
-                            model->covariances[k * D * D + d1 * D + d2] += local_cov[k * D * D + d1 * D + d2];
+                            acc_covs[k * D * D + d1 * D + d2] += local_cov[k * D * D + d1 * D + d2];
                         }
                     }
                 }
@@ -278,16 +278,19 @@ void gmm_train(float* data, int N, int D, int K,
 
         // Finalize covariances (scale and symmetrize)
         for (int k = 0; k < K; k++) {
-            float inv_Nk = inv_Nk_all[k];
+            double inv_Nk = inv_Nk_all[k];
             for (int d1 = 0; d1 < D; d1++) {
                 for (int d2 = 0; d2 <= d1; d2++) {
-                    float val = model->covariances[k * D * D + d1 * D + d2] * inv_Nk;
-                    model->covariances[k * D * D + d1 * D + d2] = val;
-                    model->covariances[k * D * D + d2 * D + d1] = val; // Symmetrize
+                    double val = acc_covs[k * D * D + d1 * D + d2] * inv_Nk;
+                    model->covariances[k * D * D + d1 * D + d2] = (float)val;
+                    model->covariances[k * D * D + d2 * D + d1] = (float)val; // Symmetrize
                 }
             }
         }
         free(inv_Nk_all);
+        free(acc_weights);
+        free(acc_means);
+        free(acc_covs);
 
         // Output progress
         printf("  [Iter %3d] Log Likelihood: %lf\n", iter, log_likelihood);

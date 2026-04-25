@@ -204,29 +204,29 @@ void gmm_train(float* data, int N, int D, int K, int max_iters, float tol, float
         log_likelihood /= N; // Average log likelihood
 
         // M-STEP Optimized: Cache locality and symmetry
-        memset(model->weights, 0, K * sizeof(float));
-        memset(model->means, 0, K * D * sizeof(float));
-        memset(model->covariances, 0, K * D * D * sizeof(float));
+        double* acc_weights = (double*)calloc(K, sizeof(double));
+        double* acc_means = (double*)calloc(K * D, sizeof(double));
+        double* acc_covs = (double*)calloc(K * D * D, sizeof(double));
 
         // Pass 1: Accumulate Nk and Means (Outer loop over N)
         for (int n = 0; n < N; n++) {
             for (int k = 0; k < K; k++) {
-                float resp = responsibilities[n * K + k];
-                model->weights[k] += resp;
+                double resp = (double)responsibilities[n * K + k];
+                acc_weights[k] += resp;
                 for (int d = 0; d < D; d++) {
-                    model->means[k * D + d] += resp * data[n * D + d];
+                    acc_means[k * D + d] += resp * (double)data[n * D + d];
                 }
             }
         }
 
         // Finalize means and calculate inverse Nk for covariance pass
-        float* inv_Nk_all = (float*)malloc(K * sizeof(float));
+        double* inv_Nk_all = (double*)malloc(K * sizeof(double));
         for (int k = 0; k < K; k++) {
-            float Nk = model->weights[k];
-            inv_Nk_all[k] = (Nk > 1e-10f) ? 1.0f / Nk : 0.0f;
-            model->weights[k] = Nk / N; // Update global weights
+            double Nk = acc_weights[k];
+            inv_Nk_all[k] = (Nk > 1e-10) ? 1.0 / Nk : 0.0;
+            model->weights[k] = (float)(Nk / N); // Update global weights
             for (int d = 0; d < D; d++) {
-                model->means[k * D + d] *= inv_Nk_all[k];
+                model->means[k * D + d] = (float)(acc_means[k * D + d] * inv_Nk_all[k]);
             }
         }
 
@@ -234,13 +234,13 @@ void gmm_train(float* data, int N, int D, int K, int max_iters, float tol, float
         for (int n = 0; n < N; n++) {
             const float* x_n = &data[n * D];
             for (int k = 0; k < K; k++) {
-                float resp = responsibilities[n * K + k];
-                if (resp < 1e-6f) continue; // Skip negligible contributions
+                double resp = (double)responsibilities[n * K + k];
+                if (resp < 1e-6) continue; // Skip negligible contributions
                 const float* mu_k = &model->means[k * D];
                 for (int d1 = 0; d1 < D; d1++) {
-                    float diff1 = x_n[d1] - mu_k[d1];
+                    double diff1 = (double)x_n[d1] - (double)mu_k[d1];
                     for (int d2 = 0; d2 <= d1; d2++) { // Lower triangle only
-                        model->covariances[k * D * D + d1 * D + d2] += resp * diff1 * (x_n[d2] - mu_k[d2]);
+                        acc_covs[k * D * D + d1 * D + d2] += resp * diff1 * ((double)x_n[d2] - (double)mu_k[d2]);
                     }
                 }
             }
@@ -248,16 +248,19 @@ void gmm_train(float* data, int N, int D, int K, int max_iters, float tol, float
 
         // Finalize covariances (scale and symmetrize)
         for (int k = 0; k < K; k++) {
-            float inv_Nk = inv_Nk_all[k];
+            double inv_Nk = inv_Nk_all[k];
             for (int d1 = 0; d1 < D; d1++) {
                 for (int d2 = 0; d2 <= d1; d2++) {
-                    float val = model->covariances[k * D * D + d1 * D + d2] * inv_Nk;
-                    model->covariances[k * D * D + d1 * D + d2] = val;
-                    model->covariances[k * D * D + d2 * D + d1] = val; // Symmetrize
+                    double val = acc_covs[k * D * D + d1 * D + d2] * inv_Nk;
+                    model->covariances[k * D * D + d1 * D + d2] = (float)val;
+                    model->covariances[k * D * D + d2 * D + d1] = (float)val; // Symmetrize
                 }
             }
         }
         free(inv_Nk_all);
+        free(acc_weights);
+        free(acc_means);
+        free(acc_covs);
         
         // Output progress
         printf("  [Iter %3d] Log Likelihood: %lf\n", iter, log_likelihood);
