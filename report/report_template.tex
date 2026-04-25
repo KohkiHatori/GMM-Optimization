@@ -1,4 +1,4 @@
-\documentclass[12pt]{article}
+\documentclass[10pt]{article}
 \usepackage[utf8]{inputenc}
 \usepackage{amsmath, amssymb}
 \usepackage{graphicx}
@@ -18,23 +18,53 @@
 \newpage
 
 \section{Description of the Problem}
-% Provide a clear description of the application/problem you chose to optimize.
-% Specifically discussing the context of the Gaussian Mixture Model (GMM).
+This project focuses on the performance optimization of the Gaussian Mixture Model (GMM) training process. GMM is a robust probabilistic model used extensively in machine learning, signal processing, and data analysis for tasks such as clustering, anomaly detection, and density estimation. Training a GMM entails fitting a dataset of $N$ points in a $D$-dimensional space to $K$ distinct Gaussian distributions by estimating their corresponding weights, means, and covariance matrices.
+
+The parameter estimation is heavily reliant on the iterative Expectation-Maximization (EM) algorithm, which alternates between two computationally rigorous phases:
+\begin{itemize}
+    \item \textbf{E-Step (Expectation):} Evaluates the multivariate Gaussian probability density function for every data point across all $K$ clusters to compute posterior probabilities (responsibilities).
+    \item \textbf{M-Step (Maximization):} Aggregates the responsibilities across the dataset to update the model parameters (weights, means, and covariances).
+\end{itemize}
+
+As dataset sizes ($N$) and dimensionalities ($D$) increase, the EM algorithm becomes highly computationally and memory intensive due to continuous data passes and complex linear algebra operations (such as Cholesky decompositions for covariance matrix inversion). The primary objective of this project is to analyze the performance bottlenecks of a serial GMM implementation and accelerate the algorithm by utilizing parallel computing paradigms, specifically OpenMP for multi-core CPUs and CUDA for GPU architectures.
 
 \section{Serial Code and Algorithm}
-% Describe what the serial code/algorithm looks like.
-% Explain the Expectation-Maximization (EM) algorithm for GMM.
-% What is the algorithmic complexity? e.g., O(N * K * D^2 * iterations)
+The base serial implementation fundamentally loops through a predefined number of iterations or until convergence, executing the Expectation (E) and Maximization (M) steps sequentially. 
+
+\begin{itemize}
+    \item \textbf{Expectation Step:} For every data point $x_i$ ($1 \le i \le N$) and every mixture component $k$ ($1 \le k \le K$), the algorithm computes the continuous multidimensional Gaussian probability. This involves computing the Mahalanobis distance by subtracting the mean vector, multiplying by the inverse covariance matrix, and calculating the exponential. The results are normalized to determine the responsibility $\gamma_{i,k}$, representing the probabilistic assignment of point $x_i$ to cluster $k$.
+    \item \textbf{Maximization Step:} The responsibilities are used to recalculate the parameters of the distributions. First, the algorithm computes the total effective weight for each cluster. Next, it performs a full sweep through the dataset to compute the new mean vectors. Finally, it executes another sweep to update the covariance matrices using the newly found means and the responsibility weights.
+\end{itemize}
+
+\textbf{Algorithmic Complexity:} The computational complexity per EM iteration is bounded by the tensor operations. The E-step and covariance computation in the M-step both require vector-matrix multiplications involving the $D \times D$ covariance matrix for all $N$ data points and $K$ clusters. Therefore, the overall time complexity per iteration scales as $\mathcal{O}(N \cdot K \cdot D^2)$. Over $I$ iterations, the total computational complexity is $\mathcal{O}(I \cdot N \cdot K \cdot D^2)$.
 
 \section{Performance Profiling \& Bottlenecks}
-% Where does the time go in the serial execution? (Expect E-step and computing covariance in M-step to dominate).
-% What is the arithmetic intensity of the workload?
-% Highlight that GMM training is notoriously memory-bandwidth bound rather than compute-bound.
+Performance profiling on the serial execution (using tools like \texttt{gprof} or Xcode Instruments) reveals that the overwhelming majority of the runtime is concentrated within two heavily nested loops: the Gaussian probability calculation in the E-step, and the covariance matrix calculation in the M-step. 
+
+When evaluating the arithmetic intensity (the ratio of floating-point operations to bytes of memory accessed), GMM training is notoriously \textbf{memory-bandwidth bound} rather than strictly compute-bound. 
+
+For every iteration:
+\begin{enumerate}
+    \item The E-step reads the entire $N \times D$ dataset matrix.
+    \item The M-step (means calculation) reads the $N \times D$ dataset matrix again along with the $N \times K$ responsibilities.
+    \item The M-step (covariance calculation) reads the $N \times D$ dataset matrix a third time to calculate the outer products.
+\end{enumerate}
+
+This data-access paradigm forces the processor to stream the massive $N \times D$ memory footprint from main DRAM three separate times per iteration. Consequently, parallel optimization strategies must account for memory movement, as compute pipelines often stall waiting for variable fetches rather than arithmetic exhaustion.
 
 \section{Data Structures \& Memory}
-% What are the primary data structures used? (Data matrix NxD, Means KxD, Covariances KxDxD, Responsibilities NxK, etc.)
-% What is the memory reference pattern? Is data accessed sequentially or randomly?
-% E.g., reading dataset points sequentially multiple times per iteration.
+To support the EM algorithm, the implementation relies on several primary data structures. To ensure cache locality and avoid pointer chasing, these are allocated as contiguous 1D memory blocks representing 2D or 3D matrices in row-major order:
+\begin{itemize}
+    \item \textbf{Dataset (\texttt{data}):} An $N \times D$ matrix containing the input features.
+    \item \textbf{Means (\texttt{means}):} A $K \times D$ matrix tracking the centroid of each Gaussian component.
+    \item \textbf{Covariances (\texttt{covariances}):} A $K \times D \times D$ tensor representing the covariance matrix for each component.
+    \item \textbf{Responsibilities (\texttt{responsibilities}):} An $N \times K$ matrix storing the probability of each point belonging to each class.
+    \item \textbf{Inverse Covariances:} A pre-calculated $K \times D \times D$ tensor to avoid repeated matrix inversions inside the inner loop.
+\end{itemize}
+
+\textbf{Memory Reference Pattern:} The memory access pattern across the dataset is largely sequential. During the E and M-steps, the outermost loop iterates over the dataset $N$, and the inner loops iterate over $K$ and $D$. Because the dataset is laid out such that the $D$ dimensions for a single point are perfectly contiguous, the CPU accesses the memory sequentially, step-by-step. 
+
+This sequential read pattern is highly cache-friendly. Modern CPU hardware prefetchers can easily detect the linear access stride and proactively load the memory lines into L1 and L2 caches ahead of the execution core, efficiently masking latency. However, for extremely large values of $N$, the full dataset capacity easily exceeds the L3 cache, causing unavoidable capacities misses and cyclic cache flushing over the iterations.
 
 \section{Parallel Modifications}
 % Detail any modifications made to the algorithm to run in parallel.
