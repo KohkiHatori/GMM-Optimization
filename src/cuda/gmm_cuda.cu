@@ -173,29 +173,47 @@ __global__ void m_step_pass2_kernel(const float* soa_data, const float* resp, co
 
 // Host Helper: Compute Cholesky Decomposition of Covariance Matrices
 // Computes L_all (lower triangular) and log_det_L on the CPU
+static int cholesky_host(float* A, float* L, int D) {
+    for (int i = 0; i < D * D; i++) L[i] = 0.0f;
+    for (int i = 0; i < D; i++) {
+        for (int j = 0; j <= i; j++) {
+            float sum = 0.0f;
+            for (int k = 0; k < j; k++) {
+                sum += L[i * D + k] * L[j * D + k];
+            }
+            if (i == j) {
+                float val = A[i * D + i] - sum;
+                if (val <= 0.0f) return 0; // Not positive definite
+                L[i * D + j] = sqrtf(val);
+            } else {
+                L[i * D + j] = (1.0f / L[j * D + j]) * (A[i * D + j] - sum);
+            }
+        }
+    }
+    return 1;
+}
+
 void compute_cholesky_host(float* covariances, float* L_all, float* log_det_L, int K, int D) {
     for (int k = 0; k < K; k++) {
+        float* cov_k = &covariances[k * D * D];
         float* L = &L_all[k * D * D];
-        float log_det = 0.0f;
         
-        for (int i = 0; i < D * D; i++) L[i] = 0.0f;
+        // Add tiny regularization to diagonal for numeric stability
+        for (int d = 0; d < D; d++) {
+            cov_k[d * D + d] += 1e-4f;
+        }
 
-        for (int i = 0; i < D; i++) {
-            for (int j = 0; j <= i; j++) {
-                float sum = covariances[k * D * D + i * D + j];
-                for (int l = 0; l < j; l++) {
-                    sum -= L[i * D + l] * L[j * D + l];
-                }
-                
-                if (i == j) {
-                    // Prevent negative or zero due to numerical instability
-                    if (sum < 1e-15f) sum = 1e-15f; 
-                    L[i * D + j] = sqrtf(sum);
-                    log_det += 2.0f * logf(L[i * D + j]);
-                } else {
-                    L[i * D + j] = sum / L[j * D + j];
-                }
+        if (!cholesky_host(cov_k, L, D)) {
+            // Tikhonov regularization block if singular
+            for (int d = 0; d < D; d++) {
+                cov_k[d * D + d] += 1.0f;
             }
+            cholesky_host(cov_k, L, D);
+        }
+        
+        float log_det = 0.0f;
+        for (int d = 0; d < D; d++) {
+            log_det += logf(L[d * D + d]);
         }
         log_det_L[k] = log_det;
     }
@@ -382,10 +400,6 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
                         sig_sum += h_partial_Sigma[(k * blocks_per_cluster + b) * D * D + i * D + j];
                     }
                     double centered = sig_sum / fmax(Nk, 1e-15); // Already centered via (X - mu) in pass 2
-                    
-                    if (i == j) {
-                        centered += 1e-4; // Regularization (matches scikit-learn validation setup)
-                    }
                     model->covariances[k * D * D + i * D + j] = (float)centered;
                 }
             }
