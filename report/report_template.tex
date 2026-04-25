@@ -69,18 +69,35 @@ To support the EM algorithm, the implementation relies on several primary data s
 This sequential read pattern is highly cache-friendly. Modern CPU hardware prefetchers can easily detect the linear access stride and proactively load the memory lines into L1 and L2 caches ahead of the execution core, efficiently masking latency. However, for extremely large values of $N$, the full dataset capacity easily exceeds the L3 cache, causing unavoidable capacities misses and cyclic cache flushing over the iterations.
 
 \section{Parallel Modifications}
-% Detail any modifications made to the algorithm to run in parallel.
-% Mention OpenMP (using threads, collapse, local structures) and CUDA (blocks, grid sizes, atomic operations).
+To transition the serial algorithm into parallel applications capable of producing mathematically identical results asynchronously, several macro structural modifications were enacted to resolve deep-seated data dependencies and prevent race conditions.
+
+\begin{itemize}
+    \item \textbf{OpenMP (CPU):} In the baseline serial code, updating the global distribution parameters (means and covariances) during the M-step causes massive data contention. To safely parallelize this, thread-local storage was introduced. Every active thread allocates a private computational space (e.g., \texttt{local\_weight}, \texttt{local\_mean}, and \texttt{local\_covariance}). Threads autonomously accumulate partial sums from their designated data chunks into these private structures lock-free. After the intensive parallel loops conclude, a singular \texttt{\#pragma omp critical} syncing step securely aggregates the scattered local results into the unified global distribution parameters.
+    \item \textbf{CUDA (GPU):} The GPU adaptation requires translating deeply nested iteration loops into flattened kernel launches. Instead of looping through instances sequentially, the outer dataset loop iterating over $N$ is mapped to the GPU grid layout. Each CUDA thread calculates the probabilities and continuous responsibilities exclusively for a single assigned data point. To update the global parameters without memory corruption, the kernels rely on \texttt{atomicAdd()} operations to serialize concurrent floating-point additions effectively.
+\end{itemize}
 
 \section{Partitioning Strategy}
-% Explain how the data and computations were partitioned.
-% e.g., Chunking the N samples across OpenMP threads; mapping threads to samples or to dimensions in CUDA.
+Determining how the immense data workload is distributed directly influences the efficiency of the implementation.
+
+\begin{itemize}
+    \item \textbf{OpenMP Partitioning:} Since the algorithmic iterations over the $N$ points in the dataset are operationally independent during the E-step and early M-step, a 1D flat partitioning approach is utilized. By defining \texttt{\#pragma omp parallel for schedule(static)}, the $N \times D$ data matrix is evenly sectioned out directly to the active hardware threads. For an execution configuration of $N=500,000$ points running across 24 threads, each underlying core is assigned to process precisely $\approx 20,833$ contiguous points, ensuring absolute L1 cache lineage continuity.
+    \item \textbf{CUDA Partitioning:} The CUDA grid is similarly modeled leveraging 1D mapping logic. The absolute thread index (\texttt{tid = blockIdx.x * blockDim.x + threadIdx.x}) acts directly as the designated pointer to an individual point $x_i$. Grid dimensions are dynamically evaluated using ceiling integer division (e.g., $\lceil N / 256 \rceil$), sorting the workload into parallel thread-blocks of size 256. This layout forces Streaming Multiprocessors to access the contiguous feature arrays in memory-coalesced 32-thread warp executions.
+\end{itemize}
 
 \section{Optimizations Overview}
-% Provide an overview of your optimized codes.
-% What specific optimizations were implemented?
-% E.g., CPU Vectorization (AVX2/AVX-512), Private Covariance matrices for lock-free updates (OpenMP), Shared Memory usage (CUDA).
-% What problems or challenges did you encounter during optimization?
+Once parallel correctness was achieved, several underlying hardware optimizations were layered onto the structure to enhance memory bandwidth utilization and floating-point throughput.
+
+\textbf{OpenMP CPU Optimizations:}
+\begin{enumerate}
+    \item \textbf{SIMD Vectorization Alignments:} The defined mathematical baseline ($D=32$) acts as a highly optimized parameter metric for contemporary CPUs. Since 32 floating-point values resolve to exactly 128 bytes, they efficiently saturate AVX2 (256-bit) and AVX-512 vector lengths across execution cycles. Utilizing the `gcc` compiler flags (`-O3 -ffast-math`), innermost $D$ dimension loops natively compile down to singular SIMD vectorized assembly instructions without requiring manual intrinsic injections.
+    \item \textbf{Lock-Free Execution Cycles:} Replacing persistent reduction locks or atomic operations inside the loop body with the isolated `local\_covariance` arrays bypasses immense OS thread-contention and lock latency across the 24 cores.
+\end{enumerate}
+
+\textbf{CUDA GPU Optimizations \& Challenges:}
+\begin{enumerate}
+    \item \textbf{Shared Memory Tiling Mechanisms:} To deflect the severe latency involved in repeatedly accessing configuration tensors (like the \texttt{means} array) directly from standard HBM2 global memory, evaluating blocks proactively load subsets of cluster constraints directly into local SM \texttt{\_\_shared\_\_} memory during initial execution stages, streamlining execution loops directly from SRAM.
+    \item \textbf{Challenge: Heavy Atomic Contention:} During the CUDA M-step reduction phases, compiling the global matrices requires significant executions of \texttt{atomicAdd} in global or shared memory. In parameter ranges operating high cluster counts ($K$), increasing volumes of threads attempt to write over the exact identical memory destinations simultaneously for probability bins. This hardware bottleneck mandates immense thread serialization queuing logic, occasionally forcing the GPU implementation to underperform its highly vectored CPU equivalent.
+\end{enumerate}
 
 \section{Experiments and Results}
 % Present your experiments and results. Use graphs and tables to show scaling and performance across serial, OpenMP, and CUDA implementations.
