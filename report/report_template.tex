@@ -134,9 +134,18 @@ Our benchmarking results on a broader grid (varying $K$ up to 96) reveal a signi
     \item \textbf{The Cross-over Point:} As $D$ and $K$ increase, the workload transitions from being memory-latency bound to compute-throughput bound.
     \begin{itemize}
         \item For $D=8$, the cross-over occurs at $K=8$, where CUDA begins to lead.
-        \item For $D=32$, OpenMP holds its advantage until $K \approx 12$, after which CUDA's massive parallelism takes over.
+        \item For $D=32$, OpenMP holds its advantage until $K \approx 12$, after which CUDA's massive parallelism takes over (see Figure \ref{fig:walltime-k}).
     \end{itemize}
-    \item \textbf{High Complexity Scaling:} At high cluster counts ($K \ge 32$), the GPU's superior throughput becomes dominant. At the maximum tested configuration ($D=32, K=96$), the CUDA implementation achieves a wall time of \textbf{9.3s}, outperforming the 32-thread OpenMP implementation (\textbf{25.5s}) by a factor of \textbf{2.7x}, and the serial reference (\textbf{88.8s}) by nearly \textbf{10x}.
+
+    \begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.75\textwidth]{walltime-vs-k.png}
+    \caption{Performance cross-over between OpenMP T32 and CUDA ($D=32$). OpenMP's efficiency at low $K$ is eventually overtaken by CUDA's throughput as model complexity increases.}
+    \label{fig:walltime-k}
+    \end{figure}
+
+    \item \textbf{High Complexity Scaling:} At high cluster counts ($K \ge 32$), the GPU's superior throughput becomes dominant.
+ At the maximum tested configuration ($D=32, K=96$), the CUDA implementation achieves a wall time of \textbf{9.3s}, outperforming the 32-thread OpenMP implementation (\textbf{25.5s}) by a factor of \textbf{2.7x}, and the serial reference (\textbf{88.8s}) by nearly \textbf{10x}.
 \end{itemize}
 
 \subsection{Architectural Performance Factors}
