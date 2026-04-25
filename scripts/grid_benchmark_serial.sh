@@ -54,4 +54,5 @@ for D in "${D_ARRAY[@]}"; do
     done
 done
 
-echo "Grid benchmark complete. Results in $CSV_OUT"
+echo "Generating 3D Surface Plot..."
+python3 visualization/plot_grid_3d.py --csv_dir results/grid_benchmark/timing --out_html results/grid_benchmark/plots/grid_scaling_3d.html
