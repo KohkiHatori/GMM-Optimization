@@ -4,12 +4,9 @@ bin/
 *.out
 
 # Data and Results
-results/
 data/test_*/
 *.bin
 *.npz
-*.csv
-*.html
 
 # Python
 __pycache__/
