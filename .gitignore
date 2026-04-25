@@ -49,3 +49,5 @@ tmp/
 
 
 .geminiignore
+
+report/*.pdf
