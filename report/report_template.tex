@@ -1,0 +1,81 @@
+\documentclass[12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\geometry{a4paper, margin=1in}
+
+\title{EC527 Final Project Report: GMM Optimization}
+\author{Author Name(s)}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Description of the Problem}
+% Provide a clear description of the application/problem you chose to optimize.
+% Specifically discussing the context of the Gaussian Mixture Model (GMM).
+
+\section{Serial Code and Algorithm}
+% Describe what the serial code/algorithm looks like.
+% Explain the Expectation-Maximization (EM) algorithm for GMM.
+% What is the algorithmic complexity? e.g., O(N * K * D^2 * iterations)
+
+\section{Performance Profiling \& Bottlenecks}
+% Where does the time go in the serial execution? (Expect E-step and computing covariance in M-step to dominate).
+% What is the arithmetic intensity of the workload?
+% Highlight that GMM training is notoriously memory-bandwidth bound rather than compute-bound.
+
+\section{Data Structures \& Memory}
+% What are the primary data structures used? (Data matrix NxD, Means KxD, Covariances KxDxD, Responsibilities NxK, etc.)
+% What is the memory reference pattern? Is data accessed sequentially or randomly?
+% E.g., reading dataset points sequentially multiple times per iteration.
+
+\section{Parallel Modifications}
+% Detail any modifications made to the algorithm to run in parallel.
+% Mention OpenMP (using threads, collapse, local structures) and CUDA (blocks, grid sizes, atomic operations).
+
+\section{Partitioning Strategy}
+% Explain how the data and computations were partitioned.
+% e.g., Chunking the N samples across OpenMP threads; mapping threads to samples or to dimensions in CUDA.
+
+\section{Optimizations Overview}
+% Provide an overview of your optimized codes.
+% What specific optimizations were implemented?
+% E.g., CPU Vectorization (AVX2/AVX-512), Private Covariance matrices for lock-free updates (OpenMP), Shared Memory usage (CUDA).
+% What problems or challenges did you encounter during optimization?
+
+\section{Experiments and Results}
+% Present your experiments and results. Use graphs and tables to show scaling and performance across serial, OpenMP, and CUDA implementations.
+
+\subsection{CPU vs GPU Performance Analysis}
+% Specifically from CPU_vs_GPU_Performance.md
+During benchmarking, it was observed that the CUDA implementation running on a Tesla P100 GPU is slower than the OpenMP implementation running on a 16-thread or 24-thread CPU for the specific configuration of $D=32$ and $K=8$. This outcome can be attributed to the following architectural factors:
+
+\begin{itemize}
+    \item \textbf{Memory-Bound Workload:} GMM training is highly memory-bandwidth bound. The GPU streams the entire dataset ($N \times D$) from HBM2 into SMs three times per iteration (E-Step, M-Step Means, M-Step Covariances). Conversely, modern CPUs with large L3 caches and advanced hardware prefetchers mask memory latency efficiently, keeping the data close to compute units.
+    \item \textbf{Synchronization and PCIe Overhead:} The EM iterative loop requires constant CPU/GPU synchronization. Moving partial sums, doing Cholesky decomposition on the CPU, and sending data back via the PCIe bus imposes severe latency, compared to a pure CPU process that uses registers and L1 cache across steps.
+    \item \textbf{Shared Memory Serialization:} In early CUDA implementations, using \texttt{atomicAdd} by up to 256 threads into the same shared memory locations (e.g., updating \texttt{s\_Sigma}) causes massive serialization and bank conflicts. OpenMP threads, however, allocate private \texttt{local\_cov} arrays and are completely lock-free until the end.
+    \item \textbf{CPU Vectorization "Magic Number":} A dimension of $D=32$ is highly optimal for modern CPUs with AVX2 or AVX-512 instructions. Since $32 \times 4 \text{ bytes} = 128 \text{ bytes}$, the compiler can completely unroll the loops using vectorized instructions processing the dimensions perfectly in very few clock cycles.
+\end{itemize}
+
+\subsection{Future Work for GPU Acceleration}
+To achieve better absolute performance on the GPU that surpasses highly optimized 24-thread CPU performance, the following architectural redesigns would be necessary:
+\begin{enumerate}
+    \item \textbf{Kernel Fusion:} Combine the E-step and M-step into a single kernel to reduce global memory reads to exactly once per iteration.
+    \item \textbf{GPU Cholesky Base:} Offload the Cholesky decomposition completely onto the GPU (using cuSOLVER) to eliminate iteration-blocking \texttt{cudaMemcpy} calls.
+    \item \textbf{Warp-Level Reductions:} Replace shared-memory `atomicAdd` calls with warp shuffle instructions (e.g., \texttt{\_\_shfl\_down\_sync}) to perform lock-free parallel reductions within the SMs.
+    \item \textbf{Workload Scale Up:} Test with significantly larger parameters such as $K=64$ and $D=128$, which would exceed CPU cache thresholds and showcase the true massive parallel computational strength of the GPU.
+\end{enumerate}
+
+\section{Conclusion}
+% What worked and what didn't?
+% What limits did you hit?
+% Summarize the learning outcomes, validation against truth references, and final thoughts.
+
+\end{document}

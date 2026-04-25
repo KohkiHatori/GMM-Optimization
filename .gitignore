@@ -36,3 +36,13 @@ Thumbs.db
 # Temporary Files
 *.log
 tmp/
+
+# LaTeX
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.toc
+
