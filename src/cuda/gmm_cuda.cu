@@ -89,9 +89,9 @@ __global__ void e_step_kernel(const float* soa_data, const float* means,
 // Kernel 3: M-Step Block-level Reduction
 // Grid: (K, blocks_per_cluster)
 // Block: (256, 1, 1)
-// Shared Memory: sizeof(float) * (1 + D + D * D)
+// Shared Memory: sizeof(double) * (1 + D + D * D)
 __global__ void m_step_block_reduce_kernel(const float* soa_data, const float* resp,
-                                           float* partial_Nk, float* partial_mu, float* partial_Sigma,
+                                           double* partial_Nk, double* partial_mu, double* partial_Sigma,
                                            int N, int D, int K) {
     int k = blockIdx.x; // Cluster for this block
     int b = blockIdx.y; // Block index within the cluster
@@ -99,31 +99,31 @@ __global__ void m_step_block_reduce_kernel(const float* soa_data, const float* r
     int tid = threadIdx.x;
     int block_size = blockDim.x;
 
-    extern __shared__ float s_data[]; // dynamically allocated size: 1 + D + D*D floats
-    float* s_Nk = &s_data[0];
-    float* s_mu = &s_data[1];
-    float* s_Sigma = &s_data[1 + D];
+    extern __shared__ double s_data_d[]; // dynamically allocated size: 1 + D + D*D doubles
+    double* s_Nk = &s_data_d[0];
+    double* s_mu = &s_data_d[1];
+    double* s_Sigma = &s_data_d[1 + D];
 
     // Initialize shared memory
-    if (tid == 0) s_Nk[0] = 0.0f;
-    for (int i = tid; i < D; i += block_size) s_mu[i] = 0.0f;
-    for (int i = tid; i < D * D; i += block_size) s_Sigma[i] = 0.0f;
+    if (tid == 0) s_Nk[0] = 0.0;
+    for (int i = tid; i < D; i += block_size) s_mu[i] = 0.0;
+    for (int i = tid; i < D * D; i += block_size) s_Sigma[i] = 0.0;
     __syncthreads();
 
-    float t_Nk = 0.0f;
+    double t_Nk = 0.0;
 
     // Strided loop over data points
     for (int n = b * block_size + tid; n < N; n += num_blocks * block_size) {
-        float r = resp[n * K + k];
+        double r = (double)resp[n * K + k];
         t_Nk += r;
 
         for (int d1 = 0; d1 < D; d1++) {
-            float x_d1 = soa_data[d1 * N + n];
+            double x_d1 = (double)soa_data[d1 * N + n];
             atomicAdd(&s_mu[d1], r * x_d1);
             
             for (int d2 = 0; d2 <= d1; d2++) {
-                float x_d2 = soa_data[d2 * N + n];
-                float val = r * x_d1 * x_d2;
+                double x_d2 = (double)soa_data[d2 * N + n];
+                double val = r * x_d1 * x_d2;
                 atomicAdd(&s_Sigma[d1 * D + d2], val);
                 if (d1 != d2) {
                     atomicAdd(&s_Sigma[d2 * D + d1], val);
@@ -242,14 +242,14 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
     if (blocks_per_cluster > max_blocks_per_cluster) blocks_per_cluster = max_blocks_per_cluster;
     
     // Allocate Host arrays for partial reductions
-    float* h_partial_Nk = (float*)malloc(K * blocks_per_cluster * sizeof(float));
-    float* h_partial_mu = (float*)malloc(K * blocks_per_cluster * D * sizeof(float));
-    float* h_partial_Sigma = (float*)malloc(K * blocks_per_cluster * D * D * sizeof(float));
+    double* h_partial_Nk = (double*)malloc(K * blocks_per_cluster * sizeof(double));
+    double* h_partial_mu = (double*)malloc(K * blocks_per_cluster * D * sizeof(double));
+    double* h_partial_Sigma = (double*)malloc(K * blocks_per_cluster * D * D * sizeof(double));
 
     // 2. Device Memory Allocations
     float *d_data_aos, *d_data_soa, *d_resp;
     float *d_means, *d_L_all, *d_log_det_L, *d_log_weights;
-    float *d_partial_Nk, *d_partial_mu, *d_partial_Sigma;
+    double *d_partial_Nk, *d_partial_mu, *d_partial_Sigma;
     double *d_ll_sum;
 
     size_t data_size = N * D * sizeof(float);
@@ -265,9 +265,9 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
     CUDA_CHECK(cudaMalloc(&d_log_weights, K * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_ll_sum, sizeof(double)));
 
-    CUDA_CHECK(cudaMalloc(&d_partial_Nk, K * blocks_per_cluster * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_partial_mu, K * blocks_per_cluster * D * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_partial_Sigma, K * blocks_per_cluster * D * D * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_partial_Nk, K * blocks_per_cluster * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_partial_mu, K * blocks_per_cluster * D * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_partial_Sigma, K * blocks_per_cluster * D * D * sizeof(double)));
 
     // 3. Copy Data to Device and Transpose
     CUDA_CHECK(cudaMemcpy(d_data_aos, host_data, data_size, cudaMemcpyHostToDevice));
@@ -284,7 +284,7 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
     int blocks_per_grid_e = (N + threads_per_block_e - 1) / threads_per_block_e;
 
     dim3 m_step_grid(K, blocks_per_cluster);
-    int m_step_shared_mem = (1 + D + D * D) * sizeof(float);
+    int m_step_shared_mem = (1 + D + D * D) * sizeof(double);
 
     double log_likelihood = -1e18;
 
@@ -316,39 +316,39 @@ void gmm_train_cuda(float* host_data, int N, int D, int K,
         CUDA_CHECK(cudaDeviceSynchronize());
 
         // --- HOST FINALIZATION ---
-        CUDA_CHECK(cudaMemcpy(h_partial_Nk, d_partial_Nk, K * blocks_per_cluster * sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_partial_mu, d_partial_mu, K * blocks_per_cluster * D * sizeof(float), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(h_partial_Sigma, d_partial_Sigma, K * blocks_per_cluster * D * D * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_partial_Nk, d_partial_Nk, K * blocks_per_cluster * sizeof(double), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_partial_mu, d_partial_mu, K * blocks_per_cluster * D * sizeof(double), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_partial_Sigma, d_partial_Sigma, K * blocks_per_cluster * D * D * sizeof(double), cudaMemcpyDeviceToHost));
 
         for (int k = 0; k < K; k++) {
-            float Nk = 0.0f;
+            double Nk = 0.0;
             for (int b = 0; b < blocks_per_cluster; b++) Nk += h_partial_Nk[k * blocks_per_cluster + b];
             
-            model->weights[k] = Nk / N;
+            model->weights[k] = (float)(Nk / N);
 
             // Aggregate Means
             for (int d = 0; d < D; d++) {
-                float mu_sum = 0.0f;
+                double mu_sum = 0.0;
                 for (int b = 0; b < blocks_per_cluster; b++) {
                     mu_sum += h_partial_mu[(k * blocks_per_cluster + b) * D + d];
                 }
-                model->means[k * D + d] = mu_sum / fmaxf(Nk, 1e-15f);
+                model->means[k * D + d] = (float)(mu_sum / fmax(Nk, 1e-15));
             }
 
             // Aggregate and Normalize Covariance
             for (int i = 0; i < D; i++) {
                 for (int j = 0; j < D; j++) {
-                    float sig_sum = 0.0f;
+                    double sig_sum = 0.0;
                     for (int b = 0; b < blocks_per_cluster; b++) {
                         sig_sum += h_partial_Sigma[(k * blocks_per_cluster + b) * D * D + i * D + j];
                     }
-                    float uncentered = sig_sum / fmaxf(Nk, 1e-15f);
-                    float centered = uncentered - model->means[k * D + i] * model->means[k * D + j];
+                    double uncentered = sig_sum / fmax(Nk, 1e-15);
+                    double centered = uncentered - (double)model->means[k * D + i] * (double)model->means[k * D + j];
                     
                     if (i == j) {
-                        centered += 1e-4f; // Regularization (matches scikit-learn validation setup)
+                        centered += 1e-4; // Regularization (matches scikit-learn validation setup)
                     }
-                    model->covariances[k * D * D + i * D + j] = centered;
+                    model->covariances[k * D * D + i * D + j] = (float)centered;
                 }
             }
         }
