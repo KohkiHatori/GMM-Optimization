@@ -21,6 +21,7 @@ def main():
     
     # Define colorscales for different implementations to easily distinguish them
     colorscales = ['Blues', 'Reds', 'Greens', 'Purples', 'Oranges']
+    base_colors = ['#1f77b4', '#d62728', '#2ca02c', '#9467bd', '#ff7f0e'] # Matching robust colors
     
     for i, csv_file in enumerate(csv_files):
         df = pd.read_csv(csv_file)
@@ -51,17 +52,20 @@ def main():
             colorscale=colorscales[i % len(colorscales)],
             opacity=0.8,
             showscale=False, # Hide individual colorbars to keep it clean
+            showlegend=False, # Hide surface from legend to use scatter proxy
             hovertemplate=f"<b>{name}</b><br>K: %{{x:.0f}}<br>D: %{{y:.0f}}<br>Time: %{{z:.4f}}s<extra></extra>"
         ))
         
         # Add the actual data points as scatter points floating on the surface
+        # We use this trace for the colored legend!
         fig.add_trace(go.Scatter3d(
             x=x,
             y=y,
             z=z,
             mode='markers',
-            name=f"{name} (Data)",
-            marker=dict(size=4, color='black', symbol='circle', opacity=0.5),
+            name=name,
+            marker=dict(size=5, color=base_colors[i % len(base_colors)], symbol='circle', line=dict(color='black', width=1)),
+            showlegend=True,
             hoverinfo='skip'
         ))
 
