@@ -90,7 +90,8 @@ def main():
             font=dict(size=16),
             bgcolor="rgba(255, 255, 255, 0.8)",
             bordercolor="Black",
-            borderwidth=1
+            borderwidth=1,
+            itemsizing='constant' # Forces large, visible legend markers regardless of plot marker size
         ),
         template="plotly_white",
         margin=dict(l=0, r=0, b=0, t=50) # Tighter margins for 3D plots
