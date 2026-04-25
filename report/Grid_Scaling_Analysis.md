@@ -5,8 +5,8 @@ To deeply understand the hardware limitations and scaling characteristics of the
 
 ## Methodology
 The benchmark fixes the dataset size to $N=500,000$ points and sweeps across a $5 \times 5$ grid:
-*   **Dimensions ($D$):** 4, 8, 16, 32, 64
-*   **Clusters ($K$):** 2, 4, 8, 16, 32
+*   **Dimensions ($D$):** 4, 8, 16, 32
+*   **Clusters ($K$):** 2, 4, 8, 16, 32, 64, 96
 
 We profile three implementations: Serial (baseline), OpenMP (24 threads representing peak CPU), and CUDA (Tesla P100). The results are visualized as a **3D Surface Plot** ($X=K, Y=D, Z=\text{Wall Time}$).
 
