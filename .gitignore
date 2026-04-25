@@ -45,6 +45,7 @@ tmp/
 *.fdb_latexmk
 *.synctex.gz
 *.toc
+*.xdv
 
 
 .geminiignore

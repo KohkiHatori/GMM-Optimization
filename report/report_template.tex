@@ -29,7 +29,7 @@ The parameter estimation is heavily reliant on the iterative Expectation-Maximiz
 As dataset sizes ($N$) and dimensionalities ($D$) increase, the EM algorithm becomes highly computationally and memory intensive due to continuous data passes and complex linear algebra operations (such as Cholesky decompositions for covariance matrix inversion). The primary objective of this project is to analyze the performance bottlenecks of a serial GMM implementation and accelerate the algorithm by utilizing parallel computing paradigms, specifically OpenMP for multi-core CPUs and CUDA for GPU architectures.
 
 \section{Serial Code and Algorithm}
-The base serial implementation fundamentally loops through a predefined number of iterations or until convergence, executing the Expectation (E) and Maximization (M) steps sequentially. 
+The base serial implementation fundamentally loops through a predefined number of iterations or until convergence, executing the Expectation (E) and Maximization (M) steps sequentially.
 
 \begin{itemize}
     \item \textbf{Expectation Step:} For every data point $x_i$ ($1 \le i \le N$) and every mixture component $k$ ($1 \le k \le K$), the algorithm computes the continuous multidimensional Gaussian probability. This involves first performing a Cholesky decomposition to invert the covariance matrix, then computing the Mahalanobis distance by subtracting the mean vector, multiplying by the inverse covariance matrix, and calculating the exponential. The results are normalized to determine the responsibility $\gamma_{i,k}$, representing the probabilistic assignment of point $x_i$ to cluster $k$.
@@ -41,9 +41,9 @@ The base serial implementation fundamentally loops through a predefined number o
 Therefore, for small dimensionality ($D \le 16$), the $\mathcal{O}(N \cdot K \cdot D^2)$ memory-bound operations dominate the execution. As $D$ increases, the $\mathcal{O}(K \cdot D^3)$ Cholesky matrix inversions cause the workload to become immensely compute-bound, representing the hardware inflection point between CPU caching/vectorization advantages and raw GPU FLOP throughput. Over $I$ iterations, the total computational complexity is bounded by $\mathcal{O}(I \cdot (K \cdot D^3 + N \cdot K \cdot D^2))$.
 
 \section{Performance Profiling \& Bottlenecks}
-Performance profiling on the serial execution (using tools like \texttt{gprof} or Xcode Instruments) reveals that the overwhelming majority of the runtime is concentrated within two heavily nested loops: the Gaussian probability calculation in the E-step, and the covariance matrix calculation in the M-step. 
+Performance profiling on the serial execution (using tools like \texttt{gprof} or Xcode Instruments) reveals that the overwhelming majority of the runtime is concentrated within two heavily nested loops: the Gaussian probability calculation in the E-step, and the covariance matrix calculation in the M-step.
 
-When evaluating the arithmetic intensity (the ratio of floating-point operations to bytes of memory accessed), GMM training is notoriously \textbf{memory-bandwidth bound} rather than strictly compute-bound. 
+When evaluating the arithmetic intensity (the ratio of floating-point operations to bytes of memory accessed), GMM training is notoriously \textbf{memory-bandwidth bound} rather than strictly compute-bound.
 
 For every iteration:
 \begin{enumerate}
@@ -64,7 +64,7 @@ To support the EM algorithm, the implementation relies on several primary data s
     \item \textbf{Inverse Covariances:} A pre-calculated $K \times D \times D$ tensor to avoid repeated matrix inversions inside the inner loop.
 \end{itemize}
 
-\textbf{Memory Reference Pattern:} The memory access pattern across the dataset is largely sequential. During the E and M-steps, the outermost loop iterates over the dataset $N$, and the inner loops iterate over $K$ and $D$. Because the dataset is laid out such that the $D$ dimensions for a single point are perfectly contiguous, the CPU accesses the memory sequentially, step-by-step. 
+\textbf{Memory Reference Pattern:} The memory access pattern across the dataset is largely sequential. During the E and M-steps, the outermost loop iterates over the dataset $N$, and the inner loops iterate over $K$ and $D$. Because the dataset is laid out such that the $D$ dimensions for a single point are perfectly contiguous, the CPU accesses the memory sequentially, step-by-step.
 
 This sequential read pattern is highly cache-friendly. Modern CPU hardware prefetchers can easily detect the linear access stride and proactively load the memory lines into L1 and L2 caches ahead of the execution core, efficiently masking latency. However, for extremely large values of $N$, the full dataset capacity easily exceeds the L3 cache, causing unavoidable capacities misses and cyclic cache flushing over the iterations.
 
@@ -100,14 +100,38 @@ Once parallel correctness was achieved, several underlying hardware optimization
 \end{enumerate}
 
 \section{Experiments and Results}
-In this section, we evaluate the performance of our serial, OpenMP, and CUDA implementations across a broad parameter grid. The experiments were conducted on a dataset of $N=500,000$ points, varying the dimensionality ($D$) from 4 to 32 and the number of clusters ($K$) from 2 to 96.
+In this section, we evaluate the performance of our serial, OpenMP, and CUDA implementations. We first examine the scaling behavior of OpenMP threads for a fixed model complexity, followed by a broad parameter grid search across varying $D$ and $K$.
 
-\subsection{CPU vs GPU Scaling Analysis}
-Our benchmarking results reveal a significant performance "cross-over point" between the 32-thread OpenMP CPU implementation and the CUDA GPU implementation (Tesla P100). As shown in the experimental data, the optimal hardware choice depends strictly on the computational complexity of the GMM configuration.
+\subsection{OpenMP Scaling Analysis ($D=32, K=8$)}
+We performed a scaling analysis of the OpenMP implementation by varying the number of threads from 2 to 32. For this experiment, the dimensionality was fixed at $D=32$ and the number of clusters at $K=8$, while the dataset size $N$ was scaled from 10,000 to 3,000,000 points.
+
+As illustrated in Figure \ref{fig:omp-comp}, the execution time scales effectively with the number of threads. The 32-thread configuration consistently provides the lowest wall time, completing the 3M point workload in 3.88 seconds, compared to 25.73 seconds for the 2-thread configuration. This demonstrates high parallel efficiency and effective utilization of the multi-core architecture.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.85\textwidth]{omp-comp.png}
+    \caption{OpenMP performance scaling with varying thread counts ($D=32, K=8$).}
+    \label{fig:omp-comp}
+\end{figure}
+
+\subsection{Comparison of Serial, OpenMP, and CUDA ($D=32, K=8$)}
+Figure \ref{fig:all-comp} presents a comparison between the serial implementation, the CUDA implementation, and the high-performance OpenMP configurations (T24 and T32) for the $D=32, K=8$ case.
+
+Notably, for this specific workload, both the 24-thread and 32-thread OpenMP implementations significantly outperform the CUDA implementation. At $N=3,000,000$, OpenMP T24 (6.87s) and T32 (3.88s) are both faster than CUDA (8.99s). This highlights that for moderate cluster counts, the CPU's AVX-512 vectorization and cache locality offer superior performance by avoiding the kernel launch overhead and atomic contention present in the GPU implementation.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.85\textwidth]{all-comp.png}
+    \caption{Comparative performance of Serial, CUDA, and high-thread OpenMP ($D=32, K=8$).}
+    \label{fig:all-comp}
+\end{figure}
+
+\subsection{CPU vs GPU Scaling Analysis (Broad Grid)}
+Our benchmarking results on a broader grid (varying $K$ up to 96) reveal a significant performance "cross-over point" between the 32-thread OpenMP CPU implementation and the CUDA GPU implementation (Tesla P100). The experiments were conducted on a dataset of $N=500,000$ points.
 
 \begin{itemize}
     \item \textbf{Low Complexity and Overhead:} For small values of $K$ and $D$, the OpenMP implementation consistently outperforms CUDA. For instance, at $D=4, K=2$, OpenMP completes in 0.011s compared to CUDA's 0.098s. This is primarily due to the fixed overhead of CUDA kernel launches and the fact that the small model fits entirely within the CPU's L2/L3 caches.
-    \item \textbf{The Cross-over Point:} As $D$ and $K$ increase, the workload transitions from being memory-latency bound to compute-throughput bound. 
+    \item \textbf{The Cross-over Point:} As $D$ and $K$ increase, the workload transitions from being memory-latency bound to compute-throughput bound.
     \begin{itemize}
         \item For $D=8$, the cross-over occurs at $K=8$, where CUDA begins to lead.
         \item For $D=32$, OpenMP holds its advantage until $K \approx 12$, after which CUDA's massive parallelism takes over.
@@ -122,6 +146,27 @@ The observed scaling behavior is driven by several competing architectural facto
     \item \textbf{CPU Vectorization Efficiency:} For $D=32$, the CPU utilizes AVX-512 instructions to process the dimensionality loop with extreme efficiency. This keeps the CPU competitive even at moderate complexities.
     \item \textbf{Atomic Contention:} In the CUDA M-Step, `atomicAdd` operations face high contention at low $K$ as many threads attempt to update the same cluster parameters. As $K$ increases, these updates are spread across more memory addresses, paradoxically reducing contention and improving the GPU's scaling efficiency.
 \end{itemize}
+
+\subsection{3D Surface Analysis}
+To better visualize the global performance trends across the dimensionality ($D$) and cluster ($K$) space, we generated 3D surface plots of the wall time for Serial, OpenMP T32, and CUDA implementations.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{3d-surface-analysis-1.png}
+        \caption{3D Surface Analysis (Angle 1)}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{3d-surface-analysis-2.png}
+        \caption{3D Surface Analysis (Angle 2)}
+    \end{minipage}
+    \label{fig:3d-surface}
+\end{figure}
+
+The surfaces clearly illustrate the diverging performance of the architectures. The Serial surface (green) rises sharply as both $D$ and $K$ increase. The OpenMP surface (red) remains relatively flat for a wider range of parameters, while the CUDA surface (blue) demonstrates its superior scaling at the highest complexities, maintaining the lowest wall times even as $D$ and $K$ reach their maximum values in our grid.
 
 \section{Future Work for GPU Acceleration}
 To further optimize the CUDA implementation and move the cross-over point to lower complexities, the following architectural redesigns are proposed:
@@ -143,24 +188,24 @@ Ultimately, this optimization exercise emphasized that parallel strategy cannot 
 \newpage
 \begin{thebibliography}{9}
 
-\bibitem{dempster} 
-Dempster, A.P., Laird, N.M., Rubin, D.B. (1977). 
+\bibitem{dempster}
+Dempster, A.P., Laird, N.M., Rubin, D.B. (1977).
 \textit{Maximum Likelihood from Incomplete Data via the EM Algorithm}. \textit{Journal of the Royal Statistical Society: Series B}.
 
-\bibitem{bishop} 
-Bishop, C.M. (2006). 
+\bibitem{bishop}
+Bishop, C.M. (2006).
 \textit{Pattern Recognition and Machine Learning}. Springer. (Chapter 9: Mixture Models and EM).
 
-\bibitem{cuda_guide} 
-NVIDIA Corporation. 
+\bibitem{cuda_guide}
+NVIDIA Corporation.
 \textit{NVIDIA CUDA C++ Programming Guide}. \url{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}
 
-\bibitem{sklearn} 
-scikit-learn developers. 
+\bibitem{sklearn}
+scikit-learn developers.
 \textit{GaussianMixture documentation}. \url{https://scikit-learn.org/stable/modules/mixture.html}
 
-\bibitem{roofline} 
-Williams, S. et al. (2009). 
+\bibitem{roofline}
+Williams, S. et al. (2009).
 \textit{Roofline: An Insightful Visual Performance Model}. \textit{Communications of the ACM}.
 
 \end{thebibliography}
