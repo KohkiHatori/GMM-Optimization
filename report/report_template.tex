@@ -111,7 +111,12 @@ To transition the serial algorithm into parallel applications capable of produci
     \end{itemize}
     After the intensive parallel loops conclude, a singular \texttt{\#pragma omp critical} syncing step securely aggregates the scattered local results into the unified global distribution parameters. Note that certain operations, such as the $\mathcal{O}(K \cdot D^3)$ Cholesky decompositions, remain serial to avoid parallel overhead on small matrices.
 
-    \item \textbf{CUDA (GPU):} The GPU adaptation requires translating deeply nested iteration loops into flattened kernel launches. Instead of looping through instances sequentially, the outer dataset loop iterating over $N$ is mapped to the GPU grid layout. Each CUDA thread calculates the probabilities and continuous responsibilities exclusively for a single assigned data point. To update the global parameters without memory corruption, the kernels rely on \texttt{atomicAdd()} operations to serialize concurrent floating-point additions effectively.
+    \item \textbf{CUDA (GPU):} The GPU adaptation requires translating deeply nested iteration loops into flattened kernel launches. Instead of looping through instances sequentially, the workload is mapped to the GPU grid:
+    \begin{itemize}
+        \item \textbf{E-Step (1D Grid):} Each CUDA thread is mapped to a single data point ($1 \text{ thread} = 1 \text{ point}$). This 1D mapping calculates probabilities and uses \texttt{atomicAdd()} for global Log-Likelihood accumulation.
+        \item \textbf{M-Step (2D Grid):} To prevent massive atomic contention in global memory, a 2D grid is utilized where the X-dimension maps to clusters ($K$) and the Y-dimension maps to data slices. This allows blocks to independently sweep portions of the dataset for specific clusters.
+    \end{itemize}
+    To maintain stability, a \textbf{Hybrid Math} approach is used: while the GPU handles the massive $O(N \cdot K \cdot D^2)$ data loops, the CPU performs the sequential $O(K \cdot D^3)$ Cholesky decompositions. Data is transferred via PCIe between these steps.
 \end{itemize}
 
 \section{Partitioning Strategy}
@@ -134,6 +139,9 @@ Once parallel correctness was achieved, several underlying hardware optimization
 
 \textbf{CUDA GPU Optimizations \& Challenges:}
 \begin{enumerate}
+    \item \textbf{Structure of Arrays (SoA) Layout:} While the CPU uses an Array of Structures (AoS) format, the GPU implementation performs a transpose kernel to convert the dataset into SoA format. This enables \textbf{Coalesced Memory Access}, allowing warps to fetch contiguous chunks from HBM2 with maximum hardware efficiency.
+    \item \textbf{Shared Memory Reduction:} The M-step kernels utilize block-level reduction. Threads within a block of 256 use fast \texttt{atomicAdd()} inside the ultra-fast \texttt{\_\_shared\_\_} L1 scratchpad memory. This significantly reduces the pressure on global memory bandwidth by aggregating partial sums locally before copying them back to DRAM.
+    \item \textbf{Hardware Sizing (256 Threads):} The kernels are specifically tuned for the Tesla P100 architecture. We hardcode 256 threads per block to balance \textbf{Register Pressure} (preventing spills to local memory at $D=32$) and \textbf{Occupancy}. This allows the SM to fit 8 blocks simultaneously, providing enough active warps to effectively hide memory latency.
     \item \textbf{Shared Memory Tiling Mechanisms:} To deflect the severe latency involved in repeatedly accessing configuration tensors (like the \texttt{means} array) directly from standard HBM2 global memory, evaluating blocks proactively load subsets of cluster constraints directly into local SM \texttt{\_\_shared\_\_} memory during initial execution stages, streamlining execution loops directly from SRAM.
     \item \textbf{Challenge: Heavy Atomic Contention:} During the CUDA M-step reduction phases, compiling the global matrices requires significant executions of \texttt{atomicAdd} in global or shared memory. In parameter ranges operating high cluster counts ($K$), increasing volumes of threads attempt to write over the exact identical memory destinations simultaneously for probability bins. This hardware bottleneck mandates immense thread serialization queuing logic, occasionally forcing the GPU implementation to underperform its highly vectored CPU equivalent.
 \end{enumerate}
