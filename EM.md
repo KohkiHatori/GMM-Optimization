@@ -16,7 +16,10 @@ In this step, we calculate the "responsibilities" using the current parameter es
 
 ### Step A: Multivariate Gaussian Density
 For each point $x_i$ and cluster $k$, we define the likelihood $P(x_i | k)$ using the **Multivariate Gaussian Probability Density Function (PDF)**:
-$$ P(x_i | k) = \frac{1}{(2\pi)^{D/2} |\Sigma_k|^{1/2}} \exp\left( -\frac{1}{2} (x_i - \mu_k)^T \Sigma_k^{-1} (x_i - \mu_k) \right) $$
+
+$$
+P(x_i | k) = \frac{1}{(2\pi)^{D/2} |\Sigma_k|^{1/2}} \exp\left( -\frac{1}{2} (x_i - \mu_k)^T \Sigma_k^{-1} (x_i - \mu_k) \right)
+$$
 
 #### The Mahalanobis Distance
 The core of the exponent, $(x_i - \mu_k)^T \Sigma_k^{-1} (x_i - \mu_k)$, is known as the squared **Mahalanobis Distance**. 
@@ -24,7 +27,12 @@ Unlike standard Euclidean distance, which treats all directions equally, the Mah
 
 ### Step B: Responsibility Calculation
 Using Bayes' Theorem, the posterior probability $\gamma_{i,k}$ is:
-$$ \gamma_{i,k} = \frac{\pi_k P(x_i | k)}{\sum_{j=1}^K \pi_j P(x_i | j)} $$
+
+$$
+\gamma_{i,k} = \frac{\pi_k P(x_i | k)}{\sum_{j=1}^K \pi_j P(x_i | j)}
+$$
+
+*In code, this is often performed in log-space to prevent numerical underflow.*
 
 ---
 
@@ -45,7 +53,11 @@ Because of this 3-level deep nesting, the number of floating-point operations sc
 
 **The Log-Determinant Optimization:**
 In the standard PDF formula, we must multiply by $|\Sigma|^{-1/2}$. In log-space, this becomes $-\frac{1}{2}\ln(|\Sigma|)$. Because the determinant of $\Sigma$ is simply the square of the determinant of $L$ ($|\Sigma| = |L|^2$), the fraction and the exponent cancel each other out beautifully:
-$$ -\frac{1}{2}\ln(|L|^2) = -\frac{1}{2} \cdot 2 \cdot \ln(|L|) = -\ln(|L|) $$
+
+$$
+-\frac{1}{2}\ln(|L|^2) = -\frac{1}{2} \cdot 2 \cdot \ln(|L|) = -\ln(|L|)
+$$
+
 Furthermore, since $L$ is a triangular matrix, its determinant is trivially calculated as the product of its diagonal elements. 
 
 **In Code (`src/serial/gmm.c`):**
@@ -62,7 +74,11 @@ When calculating $\gamma_{i,k}$, we handle very small probabilities that can lea
 
 **The Math:**
 To calculate $\ln(\sum \exp(v_i))$ safely, we factor out the maximum value $a$:
-$$ \ln\sum e^{v_i} = a + \ln\sum e^{v_i - a}, \text{ where } a = \max(v) $$
+
+$$
+\ln\sum e^{v_i} = a + \ln\sum e^{v_i - a}, \text{ where } a = \max(v)
+$$
+
 This ensures that at least one term in the sum is $e^0 = 1$, preventing the sum from becoming zero.
 
 **In Code (`src/serial/gmm.c`):**
@@ -82,27 +98,36 @@ for (int k = 0; k < K; k++) {
 }
 ```
 
-
 ---
-
-
 
 ## 4. The M-Step (Maximization)
 In this step, we update the parameters to maximize the expected log-likelihood.
 
 ### Step A: Calculate Effective Cluster Size ($N_k$)
-$$ N_k = \sum_{i=1}^N \gamma_{i,k} $$
+
+$$
+N_k = \sum_{i=1}^N \gamma_{i,k}
+$$
 
 ### Step B: Update Weights
-$$ \pi_k^{new} = \frac{N_k}{N} $$
+
+$$
+\pi_k^{new} = \frac{N_k}{N}
+$$
 
 ### Step C: Update Means
 The new mean is the weighted average of all data points:
-$$ \mu_k^{new} = \frac{1}{N_k} \sum_{i=1}^N \gamma_{i,k} x_i $$
+
+$$
+\mu_k^{new} = \frac{1}{N_k} \sum_{i=1}^N \gamma_{i,k} x_i
+$$
 
 ### Step D: Update Covariances
 The new covariance is the weighted outer product of the deviations from the **new** mean:
-$$ \Sigma_k^{new} = \frac{1}{N_k} \sum_{i=1}^N \gamma_{i,k} (x_i - \mu_k^{new})(x_i - \mu_k^{new})^T $$
+
+$$
+\Sigma_k^{new} = \frac{1}{N_k} \sum_{i=1}^N \gamma_{i,k} (x_i - \mu_k^{new})(x_i - \mu_k^{new})^T
+$$
 
 ---
 
@@ -129,7 +154,11 @@ We split the M-step into two distinct loops:
 
 ## 6. Convergence
 The algorithm repeats the E and M steps until the **Log-Likelihood** converges:
-$$ \ln P(X | \pi, \mu, \Sigma) = \sum_{i=1}^N \ln \left( \sum_{k=1}^K \pi_k P(x_i | k) \right) $$
+
+$$
+\ln P(X | \pi, \mu, \Sigma) = \sum_{i=1}^N \ln \left( \sum_{k=1}^K \pi_k P(x_i | k) \right)
+$$
+
 Convergence is typically reached when the increase in log-likelihood between iterations falls below a threshold (e.g., $10^{-6}$).
 
 ---
