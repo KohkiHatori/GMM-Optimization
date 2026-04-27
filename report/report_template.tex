@@ -204,7 +204,7 @@ The observed scaling behavior is driven by several competing architectural facto
 \end{itemize}
 
 \subsection{3D Surface Analysis}
-To better visualize the global performance trends across the dimensionality ($D$) and cluster ($K$) space, we generated 3D surface plots of the wall time for Serial, OpenMP T32, and CUDA implementations.
+To better visualize the global performance trends across the dimensionality ($D$) and cluster ($K$) space, we generated 3D surface plots of the wall time for Serial, OpenMP T32, and CUDA implementations. The benchmark maps the entire performance landscape using a fixed dataset size ($N=500,000$) across a grid of $D \in \{4, 8, 16, 32\}$ and $K \in \{2, 4, 8, 16, 32, 64, 96\}$.
 
 \begin{figure}[htbp]
     \centering
@@ -222,7 +222,11 @@ To better visualize the global performance trends across the dimensionality ($D$
     \label{fig:3d-surface}
 \end{figure}
 
-The surfaces clearly illustrate the diverging performance of the architectures. The Serial surface (green) rises sharply as both $D$ and $K$ increase. The OpenMP surface (red) remains relatively flat for a wider range of parameters, while the CUDA surface (blue) demonstrates its superior scaling at the highest complexities, maintaining the lowest wall times even as $D$ and $K$ reach their maximum values in our grid.
+By visualizing the data as overlapping 3D surfaces, the mathematical inflection points become visually stark:
+\begin{itemize}
+    \item \textbf{CPU Domain (Low $D$, Low $K$):} In this quadrant, the arithmetic intensity is low, and the execution is entirely dominated by memory bandwidth. The OpenMP surface (red) remains relatively flat and extremely fast because the thread-local arrays operate lock-free in the massive L3 cache. For real-world workloads like \textbf{Image Quantization ($D=3$)}, heavily threaded CPUs will easily defeat standard GPU kernels.
+    \item \textbf{GPU Domain (High $D$):} As dimensionality increases, the $\mathcal{O}(D^3)$ matrix inversions in the Cholesky decomposition overwhelm the CPU's vector units. The Serial (green) and OpenMP (red) surfaces violently spike upwards in the "High $D$" region. In contrast, the CUDA surface (blue) rises much more gradually, demonstrating its superior capability to absorb massive floating-point loads. For workloads with high dimensionality like \textbf{Audio MFCCs ($D=39$)}, the GPU becomes strictly necessary to handle the arithmetic load.
+\end{itemize}
 
 \section{Future Work for GPU Acceleration}
 To further optimize the CUDA implementation and move the cross-over point to lower complexities, the following architectural redesigns are proposed:
