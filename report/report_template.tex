@@ -101,7 +101,16 @@ This sequential read pattern is highly cache-friendly. Modern CPU hardware prefe
 To transition the serial algorithm into parallel applications capable of producing mathematically identical results asynchronously, several macro structural modifications were enacted to resolve deep-seated data dependencies and prevent race conditions.
 
 \begin{itemize}
-    \item \textbf{OpenMP (CPU):} In the baseline serial code, updating the global distribution parameters (means and covariances) during the M-step causes massive data contention. To safely parallelize this, thread-local storage was introduced. Every active thread allocates a private computational space (e.g., \texttt{local\_weight}, \texttt{local\_mean}, and \texttt{local\_covariance}). Threads autonomously accumulate partial sums from their designated data chunks into these private structures lock-free. After the intensive parallel loops conclude, a singular \texttt{\#pragma omp critical} syncing step securely aggregates the scattered local results into the unified global distribution parameters.
+    \item \textbf{OpenMP (CPU):} In the baseline serial code, updating the global distribution parameters (means and covariances) during the M-step causes massive data contention. To safely parallelize this, a \textbf{"Local-Accumulate then Global-Merge"} pattern was implemented. Every active thread allocates a private computational space (e.g., \texttt{local\_weight}, \texttt{local\_mean}, and \texttt{local\_covariance}). Threads autonomously accumulate partial sums from their designated data chunks into these private structures lock-free. 
+    
+    This is facilitated by key OpenMP pragmas:
+    \begin{itemize}
+        \item \texttt{\#pragma omp parallel reduction(+:log\_likelihood)}: Creates the thread pool and safely aggregates the log-likelihood without manual locking.
+        \item \texttt{\#pragma omp for schedule(static)}: Distributes the $N$ dataset iterations evenly, ensuring cache-friendly contiguous memory access for each thread.
+        \item \texttt{\#pragma omp for nowait}: Used in the M-step loops to remove implicit barriers, allowing threads that finish their slice early to immediately merge results.
+    \end{itemize}
+    After the intensive parallel loops conclude, a singular \texttt{\#pragma omp critical} syncing step securely aggregates the scattered local results into the unified global distribution parameters. Note that certain operations, such as the $\mathcal{O}(K \cdot D^3)$ Cholesky decompositions, remain serial to avoid parallel overhead on small matrices.
+
     \item \textbf{CUDA (GPU):} The GPU adaptation requires translating deeply nested iteration loops into flattened kernel launches. Instead of looping through instances sequentially, the outer dataset loop iterating over $N$ is mapped to the GPU grid layout. Each CUDA thread calculates the probabilities and continuous responsibilities exclusively for a single assigned data point. To update the global parameters without memory corruption, the kernels rely on \texttt{atomicAdd()} operations to serialize concurrent floating-point additions effectively.
 \end{itemize}
 
@@ -118,9 +127,9 @@ Once parallel correctness was achieved, several underlying hardware optimization
 
 \textbf{OpenMP CPU Optimizations:}
 \begin{enumerate}
-    \item \textbf{Two-Pass Accumulator Strategy:} To maximize cache locality, the M-step is split into two passes. Pass 1 accumulates weights $N_k$ and means $\mu_k$. Pass 2 uses the finalized means to update covariances $\Sigma_k$. This ensures sequential memory access, allowing hardware prefetchers to mask DRAM latency.
-    \item \textbf{SIMD Vectorization Alignments:} The defined mathematical baseline ($D=32$) acts as a highly optimized parameter metric for contemporary CPUs. Since 32 floating-point values resolve to exactly 128 bytes, they efficiently saturate AVX2 (256-bit) and AVX-512 vector lengths across execution cycles. Utilizing the `gcc` compiler flags (`-O3 -ffast-math`), innermost $D$ dimension loops natively compile down to singular SIMD vectorized assembly instructions without requiring manual intrinsic injections.
-    \item \textbf{Lock-Free Execution Cycles:} Replacing persistent reduction locks or atomic operations inside the loop body with the isolated `local\_covariance` arrays bypasses immense OS thread-contention and lock latency across the 24 cores.
+    \item \textbf{Two-Pass Accumulator Strategy:} To maximize cache locality, the M-step is split into two passes. Pass 1 accumulates weights $N_k$ and means $\mu_k$. Pass 2 uses the finalized means to update covariances $\Sigma_k$. This ensures sequential memory access, allowing hardware prefetchers to mask DRAM latency. By keeping loops simple, the compiler effectively fits more variables into registers.
+    \item \textbf{SIMD Vectorization Alignments:} The choice of $D=32$ serves as a highly optimized baseline for contemporary CPUs. Since 32 floating-point values resolve to exactly 128 bytes, they perfectly align with modern cache lines and efficiently saturate AVX-2 (256-bit) and AVX-512 vector widths. We explicitly utilize \texttt{\#pragma omp simd} in the innermost loops (e.g., Mahalanobis distance calculation) alongside compiler flags (\texttt{-O3 -ffast-math}) to guarantee execution on Single Instruction, Multiple Data hardware units, processing up to 16 floats per clock cycle.
+    \item \textbf{Lock-Free Execution Cycles:} Replacing persistent reduction locks or atomic operations inside the loop body with the isolated `local\_covariance` arrays bypasses immense OS thread-contention and lock latency across the multi-core CPU.
 \end{enumerate}
 
 \textbf{CUDA GPU Optimizations \& Challenges:}
