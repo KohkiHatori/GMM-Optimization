@@ -202,6 +202,51 @@ The observed scaling behavior is driven by several competing architectural facto
     \item \textbf{CPU Vectorization Efficiency:} For $D=32$, the CPU utilizes AVX-512 instructions to process the dimensionality loop with extreme efficiency. This keeps the CPU competitive even at moderate complexities.
     \item \textbf{Atomic Contention:} In the CUDA M-Step, `atomicAdd` operations face high contention at low $K$ as many threads attempt to update the same cluster parameters. As $K$ increases, these updates are spread across more memory addresses, paradoxically reducing contention and improving the GPU's scaling efficiency.
 \end{itemize}
+    
+\subsection{Arithmetic Intensity and the "K-Multiplier"}
+To formally understand these scaling limits, we derive the Arithmetic Intensity (AI) of the E-Step core loop. AI is the ratio of Floating Point Operations (FLOPs) to memory traffic (Bytes).
+
+For a single data point $x_n$ evaluated against all $K$ clusters, the dominant operation is the Mahalanobis distance. 
+\begin{itemize}
+    \item \textbf{Total Work (FLOPs):} The matrix-vector multiplication requires $\approx 2D^2$ operations. Across $K$ clusters, the total work per point is $\approx 2KD^2$.
+    \item \textbf{Total Traffic (Bytes):} Assuming model parameters reside in cache/shared memory, the mandatory traffic is reading $x_n$ ($4D$ bytes) and writing the responsibilities ($4K$ bytes). Total traffic is $4(D+K)$ bytes.
+\end{itemize}
+
+This yields the AI formula:
+\begin{equation}
+\text{AI} = \frac{2 K D^2}{4(D + K)} = \frac{K D^2}{2(D + K)}
+\end{equation}
+
+This formula reveals that $K$ acts as a critical amortization factor for data reuse (Temporal Locality). 
+\begin{itemize}
+    \item \textbf{Low $K$ (Memory Bound):} We pay the high memory cost to fetch $x_n$ but perform very little math. The algorithm is memory-latency bound, favoring the CPU's large caches.
+    \item \textbf{High $K$ (Compute Bound):} We fetch $x_n$ once but reuse it $K$ times, generating massive amounts of math ($2KD^2$) without requesting more data from RAM. The algorithm becomes compute-throughput bound, allowing the GPU's thousands of parallel cores to overtake the CPU.
+\end{itemize}
+
+\subsection{3D Surface Analysis}
+To better visualize the global performance trends across the dimensionality ($D$) and cluster ($K$) space, we generated 3D surface plots of the wall time for Serial, OpenMP T32, and CUDA implementations. The benchmark maps the entire performance landscape using a fixed dataset size ($N=500,000$) across a grid of $D \in \{4, 8, 16, 32\}$ and $K \in \{2, 4, 8, 16, 32, 64, 96\}$.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{3d-surface-analysis-1.png}
+        \caption{3D Surface Analysis (Angle 1)}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{3d-surface-analysis-2.png}
+        \caption{3D Surface Analysis (Angle 2)}
+    \end{minipage}
+    \label{fig:3d-surface}
+\end{figure}
+
+By visualizing the data as overlapping 3D surfaces, the mathematical inflection points become visually stark:
+\begin{itemize}
+    \item \textbf{CPU Domain (Low $D$, Low $K$):} In this quadrant, the arithmetic intensity is low, and the execution is entirely dominated by memory bandwidth. The OpenMP surface (red) remains relatively flat and extremely fast because the thread-local arrays operate lock-free in the massive L3 cache. For real-world workloads like \textbf{Image Quantization ($D=3$)}, heavily threaded CPUs will easily defeat standard GPU kernels.
+    \item \textbf{GPU Domain (High $D$):} As dimensionality increases, the $\mathcal{O}(D^3)$ matrix inversions in the Cholesky decomposition overwhelm the CPU's vector units. The Serial (green) and OpenMP (red) surfaces violently spike upwards in the "High $D$" region. In contrast, the CUDA surface (blue) rises much more gradually, demonstrating its superior capability to absorb massive floating-point loads. For workloads with high dimensionality like \textbf{Audio MFCCs ($D=39$)}, the GPU becomes strictly necessary to handle the arithmetic load.
+\end{itemize}
 
 \subsection{Empirical Bottleneck Analysis: $D$ vs. $K$}
 To mathematically determine whether Dimensionality ($D$) or the number of Clusters ($K$) is the primary driver of execution time, we performed a Power-Law Regression analysis on the benchmarking data ($N=500,000$). We fit the results to the model:
