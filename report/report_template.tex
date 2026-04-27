@@ -18,25 +18,54 @@
 \newpage
 
 \section{Description of the Problem}
-This project focuses on the performance optimization of the Gaussian Mixture Model (GMM) training process. GMM is a robust probabilistic model used extensively in machine learning, signal processing, and data analysis for tasks such as clustering, anomaly detection, and density estimation. Training a GMM entails fitting a dataset of $N$ points in a $D$-dimensional space to $K$ distinct Gaussian distributions by estimating their corresponding weights, means, and covariance matrices.
+This project focuses on the performance optimization of the Gaussian Mixture Model (GMM) training process. GMM is a robust probabilistic model used extensively in machine learning, signal processing, and data analysis for tasks such as clustering, anomaly detection, and density estimation. Training a GMM entails fitting a dataset $X = \{x_1, x_2, \dots, x_N\}$, where each $x_i \in \mathbb{R}^D$, to $K$ distinct Gaussian distributions by estimating their corresponding weights ($\pi$), means ($\mu$), and covariance matrices ($\Sigma$):
+
+\begin{itemize}
+    \item \textbf{Weights ($\pi$):} $\pi_k$ is the prior probability that a point belongs to cluster $k$. $\sum_{k=1}^K \pi_k = 1$.
+    \item \textbf{Means ($\mu$):} $\mu_k \in \mathbb{R}^D$ is the center of Gaussian $k$.
+    \item \textbf{Covariances ($\Sigma$):} $\Sigma_k \in \mathbb{R}^{D \times D}$ is the covariance matrix of Gaussian $k$.
+\end{itemize}
 
 The parameter estimation is heavily reliant on the iterative Expectation-Maximization (EM) algorithm, which alternates between two computationally rigorous phases:
 \begin{itemize}
-    \item \textbf{E-Step (Expectation):} Evaluates the multivariate Gaussian probability density function for every data point across all $K$ clusters to compute posterior probabilities (responsibilities).
-    \item \textbf{M-Step (Maximization):} Aggregates the responsibilities across the dataset to update the model parameters (weights, means, and covariances).
+    \item \textbf{E-Step (Expectation):} Evaluates the multivariate Gaussian probability density function for every data point across all $K$ clusters to compute posterior probabilities $\gamma_{i,k}$ (responsibilities).
+    \item \textbf{M-Step (Maximization):} Aggregates the responsibilities across the dataset to update the model parameters.
 \end{itemize}
 
 As dataset sizes ($N$) and dimensionalities ($D$) increase, the EM algorithm becomes highly computationally and memory intensive due to continuous data passes and complex linear algebra operations (such as Cholesky decompositions for covariance matrix inversion). The primary objective of this project is to analyze the performance bottlenecks of a serial GMM implementation and accelerate the algorithm by utilizing parallel computing paradigms, specifically OpenMP for multi-core CPUs and CUDA for GPU architectures.
 
 \section{Serial Code and Algorithm}
-The base serial implementation fundamentally loops through a predefined number of iterations or until convergence, executing the Expectation (E) and Maximization (M) steps sequentially.
+The base serial implementation fundamentally loops through a predefined number of iterations or until the log-likelihood converges, executing the Expectation (E) and Maximization (M) steps sequentially.
 
-\begin{itemize}
-    \item \textbf{Expectation Step:} For every data point $x_i$ ($1 \le i \le N$) and every mixture component $k$ ($1 \le k \le K$), the algorithm computes the continuous multidimensional Gaussian probability. This involves first performing a Cholesky decomposition to invert the covariance matrix, then computing the Mahalanobis distance by subtracting the mean vector, multiplying by the inverse covariance matrix, and calculating the exponential. The results are normalized to determine the responsibility $\gamma_{i,k}$, representing the probabilistic assignment of point $x_i$ to cluster $k$.
-    \item \textbf{Maximization Step:} The responsibilities are used to recalculate the parameters of the distributions. First, the algorithm computes the total effective weight for each cluster. Next, it performs a full sweep through the dataset to compute the new mean vectors. Finally, it executes another sweep to update the covariance matrices using the newly found means and the responsibility weights.
-\end{itemize}
+\subsection{Expectation Step}
+For each point $x_i$ and cluster $k$, we define the likelihood $P(x_i | k)$ using the \textbf{Multivariate Gaussian Probability Density Function}:
+\begin{equation}
+P(x_i | k) = \frac{1}{(2\pi)^{D/2} |\Sigma_k|^{1/2}} \exp\left( -\frac{1}{2} (x_i - \mu_k)^T \Sigma_k^{-1} (x_i - \mu_k) \right)
+\end{equation}
+The term $(x_i - \mu_k)^T \Sigma_k^{-1} (x_i - \mu_k)$ is the squared \textbf{Mahalanobis Distance}. Using Bayes' Theorem, the responsibility $\gamma_{i,k}$ is:
+\begin{equation}
+\gamma_{i,k} = \frac{\pi_k P(x_i | k)}{\sum_{j=1}^K \pi_j P(x_i | j)}
+\end{equation}
 
-\textbf{Algorithmic Complexity:} The computational complexity per EM iteration is driven by varying operations depending on the dataset grid. During the E-step, computing the multivariate Gaussian PDF requires a Cholesky decomposition and subsequent matrix inversion of the covariance matrix for each of the $K$ clusters, an operation that scales dramatically as $\mathcal{O}(K \cdot D^3)$. Furthermore, computing the Mahalanobis distance for all $N$ points and updating the covariances in the M-step dictates vector-matrix multiplications scaling as $\mathcal{O}(N \cdot K \cdot D^2)$.
+\subsection{Maximization Step}
+The parameters are updated to maximize the expected log-likelihood. Let $N_k = \sum_{i=1}^N \gamma_{i,k}$ be the effective cluster size. The updates are:
+\begin{align}
+\pi_k^{new} &= \frac{N_k}{N} \\
+\mu_k^{new} &= \frac{1}{N_k} \sum_{i=1}^N \gamma_{i,k} x_i \\
+\Sigma_k^{new} &= \frac{1}{N_k} \sum_{i=1}^N \gamma_{i,k} (x_i - \mu_k^{new})(x_i - \mu_k^{new})^T
+\end{align}
+
+\subsection{Numerical Implementation \& Optimizations}
+To ensure numerical stability and computational efficiency, we apply several mathematical tricks:
+\begin{enumerate}
+    \item \textbf{Cholesky Decomposition ($O(D^3)$):} Directly inverting $\Sigma_k$ is slow and unstable. Instead, we decompose $\Sigma_k = L L^T$. The determinant is $|\Sigma| = |L|^2$, and in log-space, $\ln(|\Sigma|^{-1/2}) = -\ln(|L|)$. Since $L$ is triangular, $|L|$ is the product of its diagonal elements.
+    \item \textbf{Log-Sum-Exp Trick:} To prevent underflow when normalizing $\gamma_{i,k}$, we use:
+    \begin{equation}
+    \ln\sum e^{v_i} = a + \ln\sum e^{v_i - a}, \text{ where } a = \max(v)
+    \end{equation}
+\end{enumerate}
+
+\textbf{Algorithmic Complexity:} The computational complexity per EM iteration is driven by varying operations depending on the dataset grid. During the E-step, computing the multivariate Gaussian PDF requires a Cholesky decomposition scaling as $\mathcal{O}(K \cdot D^3)$. Furthermore, computing the Mahalanobis distance for all $N$ points and updating the covariances in the M-step dictates vector-matrix multiplications scaling as $\mathcal{O}(N \cdot K \cdot D^2)$.
 
 Therefore, for small dimensionality ($D \le 16$), the $\mathcal{O}(N \cdot K \cdot D^2)$ memory-bound operations dominate the execution. As $D$ increases, the $\mathcal{O}(K \cdot D^3)$ Cholesky matrix inversions cause the workload to become immensely compute-bound, representing the hardware inflection point between CPU caching/vectorization advantages and raw GPU FLOP throughput. Over $I$ iterations, the total computational complexity is bounded by $\mathcal{O}(I \cdot (K \cdot D^3 + N \cdot K \cdot D^2))$.
 
@@ -89,6 +118,7 @@ Once parallel correctness was achieved, several underlying hardware optimization
 
 \textbf{OpenMP CPU Optimizations:}
 \begin{enumerate}
+    \item \textbf{Two-Pass Accumulator Strategy:} To maximize cache locality, the M-step is split into two passes. Pass 1 accumulates weights $N_k$ and means $\mu_k$. Pass 2 uses the finalized means to update covariances $\Sigma_k$. This ensures sequential memory access, allowing hardware prefetchers to mask DRAM latency.
     \item \textbf{SIMD Vectorization Alignments:} The defined mathematical baseline ($D=32$) acts as a highly optimized parameter metric for contemporary CPUs. Since 32 floating-point values resolve to exactly 128 bytes, they efficiently saturate AVX2 (256-bit) and AVX-512 vector lengths across execution cycles. Utilizing the `gcc` compiler flags (`-O3 -ffast-math`), innermost $D$ dimension loops natively compile down to singular SIMD vectorized assembly instructions without requiring manual intrinsic injections.
     \item \textbf{Lock-Free Execution Cycles:} Replacing persistent reduction locks or atomic operations inside the loop body with the isolated `local\_covariance` arrays bypasses immense OS thread-contention and lock latency across the 24 cores.
 \end{enumerate}
