@@ -70,9 +70,7 @@ To ensure numerical stability and computational efficiency, we apply several mat
 Therefore, for small dimensionality ($D \le 16$), the $\mathcal{O}(N \cdot K \cdot D^2)$ memory-bound operations dominate the execution. As $D$ increases, the $\mathcal{O}(K \cdot D^3)$ Cholesky matrix inversions cause the workload to become immensely compute-bound, representing the hardware inflection point between CPU caching/vectorization advantages and raw GPU FLOP throughput. Over $I$ iterations, the total computational complexity is bounded by $\mathcal{O}(I \cdot (K \cdot D^3 + N \cdot K \cdot D^2))$.
 
 \section{Performance Profiling \& Bottlenecks}
-Performance profiling on the serial execution (using tools like \texttt{gprof} or Xcode Instruments) reveals that the overwhelming majority of the runtime is concentrated within two heavily nested loops: the Gaussian probability calculation in the E-step, and the covariance matrix calculation in the M-step.
-
-When evaluating the arithmetic intensity (the ratio of floating-point operations to bytes of memory accessed), GMM training is notoriously \textbf{memory-bandwidth bound} rather than strictly compute-bound.
+When evaluating the arithmetic intensity, GMM training is notoriously \textbf{memory-bandwidth bound} rather than strictly compute-bound.
 
 For every iteration:
 \begin{enumerate}
@@ -81,7 +79,7 @@ For every iteration:
     \item The M-step (covariance calculation) reads the $N \times D$ dataset matrix a third time to calculate the outer products.
 \end{enumerate}
 
-This data-access paradigm forces the processor to stream the massive $N \times D$ memory footprint from main DRAM three separate times per iteration. Consequently, parallel optimization strategies must account for memory movement, as compute pipelines often stall waiting for variable fetches rather than arithmetic exhaustion.
+This data-access paradigm forces the processor to stream the massive $N \times D$ memory footprint from main memory three separate times per iteration. Consequently, parallel optimization strategies must account for memory movement, as compute pipelines often stall waiting for variable fetches rather than arithmetic exhaustion.
 
 \section{Data Structures \& Memory}
 To support the EM algorithm, the implementation relies on several primary data structures. To ensure cache locality and avoid pointer chasing, these are allocated as contiguous 1D memory blocks representing 2D or 3D matrices in row-major order:
@@ -93,16 +91,19 @@ To support the EM algorithm, the implementation relies on several primary data s
     \item \textbf{Inverse Covariances:} A pre-calculated $K \times D \times D$ tensor to avoid repeated matrix inversions inside the inner loop.
 \end{itemize}
 
-\textbf{Memory Reference Pattern:} The memory access pattern across the dataset is largely sequential. During the E and M-steps, the outermost loop iterates over the dataset $N$, and the inner loops iterate over $K$ and $D$. Because the dataset is laid out such that the $D$ dimensions for a single point are perfectly contiguous, the CPU accesses the memory sequentially, step-by-step.
+\textbf{Memory Reference Pattern:} The memory access pattern across the dataset exhibits distinct characteristics regarding spatial and temporal locality. During the E and M-steps, the outermost loop iterates over the dataset $N$, while the inner loops iterate over the clusters $K$ and dimensions $D$.
 
-This sequential read pattern is highly cache-friendly. Modern CPU hardware prefetchers can easily detect the linear access stride and proactively load the memory lines into L1 and L2 caches ahead of the execution core, efficiently masking latency. However, for extremely large values of $N$, the full dataset capacity easily exceeds the L3 cache, causing unavoidable capacities misses and cyclic cache flushing over the iterations.
+\begin{itemize}
+    \item \textbf{Spatial Locality:} Because the dataset is laid out in row-major order such that the $D$ dimensions for a single point are perfectly contiguous, the CPU accesses the memory sequentially. When the processor fetches the first dimension of $x_i$, the surrounding dimensions are pulled into the cache line simultaneously, providing excellent spatial locality and guaranteeing that subsequent dimension reads are near-instantaneous.
+    \item \textbf{Temporal Locality:} At the micro-level, there is high temporal locality during the inner loop: a single data point $x_i$ is loaded into fast registers and reused $K$ times against every cluster. However, at the macro-level across the entire EM iteration, temporal locality is severely limited. For extremely large values of $N$, the full dataset capacity easily exceeds the L3 cache. By the time the algorithm finishes processing $x_N$ and returns to $x_1$ for the next computational pass (e.g., moving from the Means calculation to the Covariance calculation), $x_1$ has already been evicted from the cache, causing unavoidable capacity misses and cyclic cache flushing.
+\end{itemize}
 
 \section{Parallel Modifications}
 To transition the serial algorithm into parallel applications capable of producing mathematically identical results asynchronously, several macro structural modifications were enacted to resolve deep-seated data dependencies and prevent race conditions.
 
 \begin{itemize}
-    \item \textbf{OpenMP (CPU):} In the baseline serial code, updating the global distribution parameters (means and covariances) during the M-step causes massive data contention. To safely parallelize this, a \textbf{"Local-Accumulate then Global-Merge"} pattern was implemented. Every active thread allocates a private computational space (e.g., \texttt{local\_weight}, \texttt{local\_mean}, and \texttt{local\_covariance}). Threads autonomously accumulate partial sums from their designated data chunks into these private structures lock-free. 
-    
+    \item \textbf{OpenMP (CPU):} In the baseline serial code, updating the global distribution parameters (means and covariances) during the M-step causes massive data contention. To safely parallelize this, a \textbf{"Local-Accumulate then Global-Merge"} pattern was implemented. Every active thread allocates a private computational space (e.g., \texttt{local\_weight}, \texttt{local\_mean}, and \texttt{local\_covariance}). Threads autonomously accumulate partial sums from their designated data chunks into these private structures lock-free.
+
     This is facilitated by key OpenMP pragmas:
     \begin{itemize}
         \item \texttt{\#pragma omp parallel reduction(+:log\_likelihood)}: Creates the thread pool and safely aggregates the log-likelihood without manual locking.
@@ -202,11 +203,11 @@ The observed scaling behavior is driven by several competing architectural facto
     \item \textbf{CPU Vectorization Efficiency:} For $D=32$, the CPU utilizes AVX-512 instructions to process the dimensionality loop with extreme efficiency. This keeps the CPU competitive even at moderate complexities.
     \item \textbf{Atomic Contention:} In the CUDA M-Step, `atomicAdd` operations face high contention at low $K$ as many threads attempt to update the same cluster parameters. As $K$ increases, these updates are spread across more memory addresses, paradoxically reducing contention and improving the GPU's scaling efficiency.
 \end{itemize}
-    
+
 \subsection{Arithmetic Intensity and the "K-Multiplier"}
 To formally understand these scaling limits, we derive the Arithmetic Intensity (AI) of the E-Step core loop. AI is the ratio of Floating Point Operations (FLOPs) to memory traffic (Bytes).
 
-For a single data point $x_n$ evaluated against all $K$ clusters, the dominant operation is the Mahalanobis distance. 
+For a single data point $x_n$ evaluated against all $K$ clusters, the dominant operation is the Mahalanobis distance.
 \begin{itemize}
     \item \textbf{Total Work (FLOPs):} The matrix-vector multiplication requires $\approx 2D^2$ operations. Across $K$ clusters, the total work per point is $\approx 2KD^2$.
     \item \textbf{Total Traffic (Bytes):} Assuming model parameters reside in cache/shared memory, the mandatory traffic is reading $x_n$ ($4D$ bytes) and writing the responsibilities ($4K$ bytes). Total traffic is $4(D+K)$ bytes.
@@ -217,7 +218,7 @@ This yields the AI formula:
 \text{AI} = \frac{2 K D^2}{4(D + K)} = \frac{K D^2}{2(D + K)}
 \end{equation}
 
-This formula reveals that $K$ acts as a critical amortization factor for data reuse (Temporal Locality). 
+This formula reveals that $K$ acts as a critical amortization factor for data reuse (Temporal Locality).
 \begin{itemize}
     \item \textbf{Low $K$ (Memory Bound):} We pay the high memory cost to fetch $x_n$ but perform very little math. The algorithm is memory-latency bound, favoring the CPU's large caches.
     \item \textbf{High $K$ (Compute Bound):} We fetch $x_n$ once but reuse it $K$ times, generating massive amounts of math ($2KD^2$) without requesting more data from RAM. The algorithm becomes compute-throughput bound, allowing the GPU's thousands of parallel cores to overtake the CPU.
