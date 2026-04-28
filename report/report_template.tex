@@ -282,13 +282,11 @@ To further optimize the CUDA implementation and move the cross-over point to low
 \end{enumerate}
 
 \section{Conclusion}
-This project successfully demonstrated the fundamental principles determining High-Performance Computing (HPC) outcomes when porting complex machine learning models to parallel architectures. By implementing the Expectation-Maximization algorithm for Gaussian Mixture Models in both OpenMP and CUDA, critical intuitions surrounding hardware bottlenecks were quantified.
+Our analysis of the GMM Expectation-Maximization algorithm across CPU and GPU architectures highlights the performance trade-offs between cache-local vectorization and massively parallel throughput. The OpenMP implementation, utilizing thread-local accumulators and AVX-512 vectorization, is most effective for memory-bound configurations with low dimensionality and cluster counts. In these cases, the CPU's large L3 cache and lower dispatch latency mitigate main memory traffic more effectively than the GPU's HBM2 and PCIe interface.
 
-What worked exceptionally well was the OpenMP thread-local caching strategy combined with AVX-512 vector pipeline unrolling, which allowed the 32-thread CPU implementation to completely dominate memory-bound, low-complexity models (low $D$, low $K$). The L3 cache capabilities effectively masked main memory latencies in a way the GPU's PCIe bus transfers could not.
+As model complexity increases ($D=32, K=96$), the workload becomes compute-bound, requiring nearly 50 billion floating-point operations per iteration. At this scale, the Tesla P100 GPU achieves a $10\times$ speedup over the serial reference, as its core density overcomes the bottlenecks of atomic contention and serial CPU-bound Cholesky inversions.
 
-However, grid testing revealed absolute architectural limits. As dimensionality and cluster counts scaled, the sheer volume of $\mathcal{O}(N \cdot K \cdot D^2)$ floating-point operations required for Mahalanobis distances and covariance outer products completely overwhelmed the CPU's vector pipelines. Here, the raw computational throughput of the Tesla P100 GPU breached the cross-over point. Despite the serial penalty of CPU-bound Cholesky inversions and heavy \texttt{atomicAdd} contention in shared memory, the GPU's massive parallelism delivered up to a $10\times$ speedup over the serial implementation under maximum tested stress limits ($D=32, K=96$).
-
-Ultimately, this optimization exercise emphasized that parallel strategy cannot be one-size-fits-all. Crossover thresholds dictate the correct hardware target. Moving forward, eliminating memory movement penalties through advanced GPU Kernel Fusion and offloading Cholesky math to \texttt{cuSOLVER} remain the clearest paths to maximizing strict GPU supremacy across all model sizes.
+These results indicate that hardware selection for GMM optimization is dependent on a "cross-over point" defined by the ratio of computational volume to memory traffic. Future work to further improve GPU performance should focus on reducing redundant memory passes through kernel fusion and offloading Cholesky decompositions to dedicated GPU libraries such as \texttt{cuSOLVER} to eliminate synchronization overhead.
 
 \newpage
 \begin{thebibliography}{9}
