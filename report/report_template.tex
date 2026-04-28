@@ -163,7 +163,7 @@ As illustrated in Figure \ref{fig:omp-comp}, the execution time scales effective
 \subsection{Comparison of Serial, OpenMP, and CUDA ($D=32, K=8$)}
 Figure \ref{fig:all-comp} presents a comparison between the serial implementation, the CUDA implementation, and the high-performance OpenMP configurations (T24 and T32) for the $D=32, K=8$ case.
 
-Notably, for this specific workload, both the 24-thread and 32-thread OpenMP implementations significantly outperform the CUDA implementation. At $N=3,000,000$, OpenMP T24 (6.87s) and T32 (3.88s) are both faster than CUDA (8.99s). This highlights that for moderate cluster counts, the CPU's AVX-512 vectorization and cache locality offer superior performance by avoiding the kernel launch overhead and atomic contention present in the GPU implementation. This unexpected result motivated us to perform a more comprehensive experiment across a parameter grid in the following section to identify the exact hardware cross-over points.
+Notably, for this specific workload, both the 24-thread and 32-thread OpenMP implementations significantly outperform the CUDA implementation. At $N=3,000,000$, OpenMP T24 (6.87s) and T32 (3.88s) are both faster than CUDA (8.99s). This highlights that for moderate cluster counts, the CPU's AVX-512 vectorization and cache locality offer better performance by avoiding the kernel launch overhead and atomic contention present in the GPU implementation. This unexpected result motivated us to perform a more comprehensive experiment across a parameter grid in the following section to identify the exact hardware cross-over points.
 
 \begin{figure}[htbp]
     \centering
@@ -190,7 +190,7 @@ Our benchmarking results on a broader grid (varying $K$ up to 96) reveal a signi
     \label{fig:walltime-k}
     \end{figure}
 
-    \item \textbf{High Complexity Scaling:} At high cluster counts ($K \ge 32$), the GPU's superior throughput becomes dominant.
+    \item \textbf{High Complexity Scaling:} At high cluster counts ($K \ge 32$), the GPU's throughput becomes dominant.
  At the maximum tested configuration ($D=32, K=96$), the CUDA implementation achieves a wall time of \textbf{9.3s}, outperforming the 32-thread OpenMP implementation (\textbf{25.5s}) by a factor of \textbf{2.7x}, and the serial reference (\textbf{88.8s}) by nearly \textbf{10x}.
 \end{itemize}
 
@@ -203,9 +203,7 @@ The observed scaling behavior is driven by several competing architectural facto
 \end{itemize}
 
 \subsection{Arithmetic Intensity and the "K-Multiplier"}
-To formally understand these scaling limits, we derive the Arithmetic Intensity (AI) of the E-Step core loop. AI is the ratio of Floating Point Operations (FLOPs) to memory traffic (Bytes).
-
-For a single data point $x_n$ evaluated against all $K$ clusters, the dominant operation is the Mahalanobis distance.
+To formally understand these scaling limits, we derive the Arithmetic Intensity (AI) of the E-Step core loop. For a single data point $x_n$ evaluated against all $K$ clusters, the dominant operation is the Mahalanobis distance.
 \begin{itemize}
     \item \textbf{Total Work (FLOPs):} The matrix-vector multiplication requires $\approx 2D^2$ operations. Across $K$ clusters, the total work per point is $\approx 2KD^2$.
     \item \textbf{Total Traffic (Bytes):} Assuming model parameters reside in cache/shared memory, the mandatory traffic is reading $x_n$ ($4D$ bytes) and writing the responsibilities ($4K$ bytes). Total traffic is $4(D+K)$ bytes.
@@ -244,7 +242,8 @@ To better visualize the global performance trends across the dimensionality ($D$
 By visualizing the data as overlapping 3D surfaces, the mathematical inflection points become visually stark:
 \begin{itemize}
     \item \textbf{CPU Domain (Low $D$, Low $K$):} In this quadrant, the arithmetic intensity is low, and the execution is entirely dominated by memory bandwidth. The OpenMP surface (red) remains relatively flat and extremely fast because the thread-local arrays operate lock-free in the massive L3 cache. For real-world workloads like \textbf{Image Quantization ($D=3$)}, heavily threaded CPUs will easily defeat standard GPU kernels.
-    \item \textbf{GPU Domain (High $D$):} As dimensionality increases, the $\mathcal{O}(D^3)$ matrix inversions in the Cholesky decomposition overwhelm the CPU's vector units. The Serial (green) and OpenMP (red) surfaces violently spike upwards in the "High $D$" region. In contrast, the CUDA surface (blue) rises much more gradually, demonstrating its superior capability to absorb massive floating-point loads. For workloads with high dimensionality like \textbf{Audio MFCCs ($D=39$)}, the GPU becomes strictly necessary to handle the arithmetic load.
+    \item \textbf{GPU Domain (High $D$):} As dimensionality increases, the $\mathcal{O}(N \cdot K \cdot D^2)$ matrix-vector multiplications (Mahalanobis distance and covariance updates) overwhelm the CPU's vector units. While both implementations perform the $\mathcal{O}(K \cdot D^3)$ Cholesky inversions serially on the CPU, the Serial (green) and OpenMP (red) surfaces violently spike upwards in the "High $D$" region because the processor cannot sustain the massive $D^2$ arithmetic load across all $N$ data points. In contrast, the CUDA surface (blue) rises much more gradually, demonstrating the GPU's superior capability to absorb these immense floating-point loads across thousands of parallel cores. For workloads with high dimensionality like \textbf{Audio MFCCs ($D=39$)}, the GPU becomes strictly necessary.
+
 \end{itemize}
 
 \subsection{Empirical Bottleneck Analysis: $D$ vs. $K$}
