@@ -282,7 +282,7 @@ To further optimize the CUDA implementation and move the cross-over point to low
 \end{enumerate}
 
 \section{Conclusion}
-Our analysis of the GMM Expectation-Maximization algorithm across CPU and GPU architectures highlights the performance trade-offs between cache-local vectorization and massively parallel throughput. The OpenMP implementation, utilizing thread-local accumulators and AVX-512 vectorization, is most effective for memory-bound configurations with low dimensionality and cluster counts. In these cases, the CPU's large L3 cache and lower dispatch latency mitigate main memory traffic more effectively than the GPU's HBM2 and PCIe interface.
+Our analysis of the GMM Expectation-Maximization algorithm across CPU and GPU architectures highlights the performance trade-offs between cache-local vectorization and massively parallel throughput. The OpenMP implementation, utilizing thread-local accumulators and AVX-512 vectorization, is most effective for memory-bound configurations with low dimensionality and cluster counts. In these cases, the CPU's large L3 cache and lower dispatch latency mitigate main memory traffic more effectively than the GPU's HBM and PCIe interface.
 
 As model complexity increases ($D=32, K=96$), the workload becomes compute-bound, requiring nearly 50 billion floating-point operations per iteration. At this scale, the Tesla P100 GPU achieves a $10\times$ speedup over the serial reference, as its core density overcomes the bottlenecks of atomic contention and serial CPU-bound Cholesky inversions.
 
