@@ -99,10 +99,10 @@ To support the EM algorithm, the implementation relies on several primary data s
 \end{itemize}
 
 \section{Parallel Modifications}
-To transition the serial algorithm into parallel applications capable of producing mathematically identical results asynchronously, several macro structural modifications were enacted to resolve deep-seated data dependencies and prevent race conditions.
+To transition the serial algorithm into parallel applications capable of producing mathematically identical results asynchronously, several structural modifications were made to resolve deep-seated data dependencies and prevent race conditions.
 
 \begin{itemize}
-    \item \textbf{OpenMP (CPU):} In the baseline serial code, updating the global distribution parameters (means and covariances) during the M-step causes massive data contention. To safely parallelize this, a \textbf{"Local-Accumulate then Global-Merge"} pattern was implemented. Every active thread allocates a private computational space (e.g., \texttt{local\_weight}, \texttt{local\_mean}, and \texttt{local\_covariance}). Threads autonomously accumulate partial sums from their designated data chunks into these private structures lock-free.
+    \item \textbf{OpenMP (CPU):} In the baseline serial code, updating the global distribution parameters (means and covariances) during the M-step causes massive data contention. To safely parallelize this, a \textbf{Local-Accumulate then Global-Merge} pattern was implemented. Every active thread allocates a private computational space (e.g., \texttt{local\_weight}, \texttt{local\_mean}, and \texttt{local\_covariance}). Threads autonomously accumulate partial sums from their designated data chunks into these private structures lock-free.
 
     This is facilitated by key OpenMP pragmas:
     \begin{itemize}
@@ -112,7 +112,7 @@ To transition the serial algorithm into parallel applications capable of produci
     \end{itemize}
     After the intensive parallel loops conclude, a singular \texttt{\#pragma omp critical} syncing step securely aggregates the scattered local results into the unified global distribution parameters. Note that certain operations, such as the $\mathcal{O}(K \cdot D^3)$ Cholesky decompositions, remain serial to avoid parallel overhead on small matrices.
 
-    \item \textbf{CUDA (GPU):} The GPU adaptation requires translating deeply nested iteration loops into flattened kernel launches. Instead of looping through instances sequentially, the workload is mapped to the GPU grid:
+    \item \textbf{CUDA (GPU):}
     \begin{itemize}
         \item \textbf{E-Step (1D Grid):} Each CUDA thread is mapped to a single data point ($1 \text{ thread} = 1 \text{ point}$). This 1D mapping calculates probabilities and uses \texttt{atomicAdd()} for global Log-Likelihood accumulation.
         \item \textbf{M-Step (2D Grid):} To prevent massive atomic contention in global memory, a 2D grid is utilized where the X-dimension maps to clusters ($K$) and the Y-dimension maps to data slices. This allows blocks to independently sweep portions of the dataset for specific clusters.
@@ -121,11 +121,10 @@ To transition the serial algorithm into parallel applications capable of produci
 \end{itemize}
 
 \section{Partitioning Strategy}
-Determining how the immense data workload is distributed directly influences the efficiency of the implementation.
 
 \begin{itemize}
-    \item \textbf{OpenMP Partitioning:} Since the algorithmic iterations over the $N$ points in the dataset are operationally independent during the E-step and early M-step, a 1D flat partitioning approach is utilized. By defining \texttt{\#pragma omp parallel for schedule(static)}, the $N \times D$ data matrix is evenly sectioned out directly to the active hardware threads. For an execution configuration of $N=500,000$ points running across 24 threads, each underlying core is assigned to process precisely $\approx 20,833$ contiguous points, ensuring absolute L1 cache lineage continuity.
-    \item \textbf{CUDA Partitioning:} The CUDA grid is similarly modeled leveraging 1D mapping logic. The absolute thread index (\texttt{tid = blockIdx.x * blockDim.x + threadIdx.x}) acts directly as the designated pointer to an individual point $x_i$. Grid dimensions are dynamically evaluated using ceiling integer division (e.g., $\lceil N / 256 \rceil$), sorting the workload into parallel thread-blocks of size 256. This layout forces Streaming Multiprocessors to access the contiguous feature arrays in memory-coalesced 32-thread warp executions.
+    \item \textbf{OpenMP Partitioning:} Since the algorithmic iterations over the $N$ points in the dataset are operationally independent during the E-step and early M-step, a 1D flat partitioning approach is utilized. By defining \texttt{\#pragma omp parallel for schedule(static)}, the $N \times D$ data matrix is evenly sectioned out directly to the active hardware threads. For example, for an execution configuration of $N=500,000$ points running across 24 threads, each underlying core is assigned to process precisely $\approx 20,833$ contiguous points, ensuring absolute L1 cache lineage continuity.
+    \item \textbf{CUDA Partitioning:} The CUDA grid is similarly modeled leveraging 1D mapping logic. The absolute thread index (\texttt{tid = blockIdx.x * blockDim.x + threadIdx.x}) acts directly as the designated pointer to an individual point $x_i$. Grid dimensions are dynamically evaluated, sorting the workload into parallel thread-blocks of size 256. This layout forces Streaming Multiprocessors to access the contiguous feature arrays in memory-coalesced 32-thread warp executions.
 \end{itemize}
 
 \section{Optimizations Overview}
@@ -133,18 +132,17 @@ Once parallel correctness was achieved, several underlying hardware optimization
 
 \textbf{OpenMP CPU Optimizations:}
 \begin{enumerate}
-    \item \textbf{Two-Pass Accumulator Strategy:} To maximize cache locality, the M-step is split into two passes. Pass 1 accumulates weights $N_k$ and means $\mu_k$. Pass 2 uses the finalized means to update covariances $\Sigma_k$. This ensures sequential memory access, allowing hardware prefetchers to mask DRAM latency. By keeping loops simple, the compiler effectively fits more variables into registers.
+    \item \textbf{Two-Pass Accumulator Strategy:} To maximize cache locality, the M-step is split into two passes. Pass 1 accumulates weights $N_k$ and means $\mu_k$. Pass 2 uses the finalized means to update covariances $\Sigma_k$. This ensures sequential memory access, allowing hardware prefetchers to mask main memory latency. By keeping loops simple, the compiler effectively fits more variables into registers.
     \item \textbf{SIMD Vectorization Alignments:} The choice of $D=32$ serves as a highly optimized baseline for contemporary CPUs. Since 32 floating-point values resolve to exactly 128 bytes, they perfectly align with modern cache lines and efficiently saturate AVX-2 (256-bit) and AVX-512 vector widths. We explicitly utilize \texttt{\#pragma omp simd} in the innermost loops (e.g., Mahalanobis distance calculation) alongside compiler flags (\texttt{-O3 -ffast-math}) to guarantee execution on Single Instruction, Multiple Data hardware units, processing up to 16 floats per clock cycle.
     \item \textbf{Lock-Free Execution Cycles:} Replacing persistent reduction locks or atomic operations inside the loop body with the isolated `local\_covariance` arrays bypasses immense OS thread-contention and lock latency across the multi-core CPU.
 \end{enumerate}
 
 \textbf{CUDA GPU Optimizations \& Challenges:}
 \begin{enumerate}
-    \item \textbf{Structure of Arrays (SoA) Layout:} While the CPU uses an Array of Structures (AoS) format, the GPU implementation performs a transpose kernel to convert the dataset into SoA format. This enables \textbf{Coalesced Memory Access}, allowing warps to fetch contiguous chunks from HBM2 with maximum hardware efficiency.
-    \item \textbf{Shared Memory Reduction:} The M-step kernels utilize block-level reduction. Threads within a block of 256 use fast \texttt{atomicAdd()} inside the ultra-fast \texttt{\_\_shared\_\_} L1 scratchpad memory. This significantly reduces the pressure on global memory bandwidth by aggregating partial sums locally before copying them back to DRAM.
+    \item \textbf{Structure of Arrays (SoA) Layout:} While the CPU uses an Array of Structures (AoS) format, the GPU implementation performs a transpose kernel to convert the dataset into SoA format. This enables \textbf{Coalesced Memory Access}, allowing warps to fetch contiguous chunks from HBM with maximum hardware efficiency.
+    \item \textbf{Shared Memory Reduction:} The M-step kernels utilize block-level reduction. Threads within a block of 256 use fast \texttt{atomicAdd()} inside the \texttt{\_\_shared\_\_} L1 scratchpad memory. This significantly reduces the pressure on global memory bandwidth by aggregating partial sums locally before copying them back to main memory.
     \item \textbf{Hardware Sizing (256 Threads):} The kernels are specifically tuned for the Tesla P100 architecture. We hardcode 256 threads per block to balance \textbf{Register Pressure} (preventing spills to local memory at $D=32$) and \textbf{Occupancy}. This allows the SM to fit 8 blocks simultaneously, providing enough active warps to effectively hide memory latency.
     \item \textbf{Shared Memory Tiling Mechanisms:} To deflect the severe latency involved in repeatedly accessing configuration tensors (like the \texttt{means} array) directly from standard HBM2 global memory, evaluating blocks proactively load subsets of cluster constraints directly into local SM \texttt{\_\_shared\_\_} memory during initial execution stages, streamlining execution loops directly from SRAM.
-    \item \textbf{Challenge: Heavy Atomic Contention:} During the CUDA M-step reduction phases, compiling the global matrices requires significant executions of \texttt{atomicAdd} in global or shared memory. In parameter ranges operating high cluster counts ($K$), increasing volumes of threads attempt to write over the exact identical memory destinations simultaneously for probability bins. This hardware bottleneck mandates immense thread serialization queuing logic, occasionally forcing the GPU implementation to underperform its highly vectored CPU equivalent.
 \end{enumerate}
 
 \section{Experiments and Results}
@@ -165,7 +163,7 @@ As illustrated in Figure \ref{fig:omp-comp}, the execution time scales effective
 \subsection{Comparison of Serial, OpenMP, and CUDA ($D=32, K=8$)}
 Figure \ref{fig:all-comp} presents a comparison between the serial implementation, the CUDA implementation, and the high-performance OpenMP configurations (T24 and T32) for the $D=32, K=8$ case.
 
-Notably, for this specific workload, both the 24-thread and 32-thread OpenMP implementations significantly outperform the CUDA implementation. At $N=3,000,000$, OpenMP T24 (6.87s) and T32 (3.88s) are both faster than CUDA (8.99s). This highlights that for moderate cluster counts, the CPU's AVX-512 vectorization and cache locality offer superior performance by avoiding the kernel launch overhead and atomic contention present in the GPU implementation.
+Notably, for this specific workload, both the 24-thread and 32-thread OpenMP implementations significantly outperform the CUDA implementation. At $N=3,000,000$, OpenMP T24 (6.87s) and T32 (3.88s) are both faster than CUDA (8.99s). This highlights that for moderate cluster counts, the CPU's AVX-512 vectorization and cache locality offer superior performance by avoiding the kernel launch overhead and atomic contention present in the GPU implementation. This unexpected result motivated us to perform a more comprehensive experiment across a parameter grid in the following section to identify the exact hardware cross-over points.
 
 \begin{figure}[htbp]
     \centering
