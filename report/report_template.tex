@@ -124,7 +124,11 @@ To transition the serial algorithm into parallel applications capable of produci
 
 \begin{itemize}
     \item \textbf{OpenMP Partitioning:} Since the algorithmic iterations over the $N$ points in the dataset are operationally independent during the E-step and early M-step, a 1D flat partitioning approach is utilized. By defining \texttt{\#pragma omp parallel for schedule(static)}, the $N \times D$ data matrix is evenly sectioned out directly to the active hardware threads. For example, for an execution configuration of $N=500,000$ points running across 24 threads, each underlying core is assigned to process precisely $\approx 20,833$ contiguous points, ensuring absolute L1 cache lineage continuity.
-    \item \textbf{CUDA Partitioning:} The CUDA grid is similarly modeled leveraging 1D mapping logic. The absolute thread index (\texttt{tid = blockIdx.x * blockDim.x + threadIdx.x}) acts directly as the designated pointer to an individual point $x_i$. Grid dimensions are dynamically evaluated, sorting the workload into parallel thread-blocks of size 256. This layout forces Streaming Multiprocessors to access the contiguous feature arrays in memory-coalesced 32-thread warp executions.
+    \item \textbf{CUDA Partitioning:} The CUDA implementation uses two distinct grid strategies based on dependency:
+    \begin{itemize}
+        \item \textbf{E-Step (1D):} A 1D mapping logic is leveraged where the absolute thread index (\texttt{tid}) acts directly as the pointer to an individual point $x_i$. Grid dimensions are dynamically evaluated using ceiling integer division (e.g., $\lceil N / 256 \rceil$), forcing Streaming Multiprocessors to access the contiguous feature arrays in memory-coalesced 32-thread warp executions.
+        \item \textbf{M-Step (2D - $K \times 64$ limit):} The M-step utilizes a 2D grid to distribute the reduction workload. The X-dimension corresponds to the $K$ clusters, and the Y-dimension maps to dataset slices, hard-capped at a maximum of 64 blocks per cluster. The justification for this $K \times 64$ cap is an architectural trade-off: it ensures enough independent thread blocks are launched to saturate the GPU's Streaming Multiprocessors, while strictly limiting the number of partial sums that must be transferred via PCIe and serially reduced by the CPU. A cap of 64 guarantees the final CPU reduction array fits entirely within the CPU's fastest L1 cache.
+    \end{itemize}
 \end{itemize}
 
 \section{Optimizations Overview}
@@ -242,7 +246,7 @@ To better visualize the global performance trends across the dimensionality ($D$
 By visualizing the data as overlapping 3D surfaces, the mathematical inflection points become visually stark:
 \begin{itemize}
     \item \textbf{CPU Domain (Low $D$, Low $K$):} In this quadrant, the arithmetic intensity is low, and the execution is entirely dominated by memory bandwidth. The OpenMP surface (red) remains relatively flat and extremely fast because the thread-local arrays operate lock-free in the massive L3 cache. For real-world workloads like \textbf{Image Quantization ($D=3$)}, heavily threaded CPUs will easily defeat standard GPU kernels.
-    \item \textbf{GPU Domain (High $D$):} As dimensionality increases, the $\mathcal{O}(N \cdot K \cdot D^2)$ matrix-vector multiplications (Mahalanobis distance and covariance updates) overwhelm the CPU's vector units. While both implementations perform the $\mathcal{O}(K \cdot D^3)$ Cholesky inversions serially on the CPU, the Serial (green) and OpenMP (red) surfaces violently spike upwards in the "High $D$" region because the processor cannot sustain the massive $D^2$ arithmetic load across all $N$ data points. In contrast, the CUDA surface (blue) rises much more gradually, demonstrating the GPU's superior capability to absorb these immense floating-point loads across thousands of parallel cores. For workloads with high dimensionality like \textbf{Audio MFCCs ($D=39$)}, the GPU becomes strictly necessary.
+    \item \textbf{GPU Domain (High $D$):} As dimensionality increases, the $\mathcal{O}(N \cdot K \cdot D^2)$ matrix-vector multiplications (Mahalanobis distance and covariance updates) overwhelm the CPU's vector units. While both implementations perform the $\mathcal{O}(K \cdot D^3)$ Cholesky inversions serially on the CPU, the Serial (green) and OpenMP (red) surfaces violently spike upwards in the "High $D$" region because the processor cannot sustain the massive $D^2$ arithmetic load across all $N$ data points. In contrast, the CUDA surface (blue) rises much more gradually, demonstrating the GPU's capability to absorb these immense floating-point loads across thousands of parallel cores. For workloads with high dimensionality like \textbf{Audio MFCCs ($D=39$)}, the GPU becomes strictly necessary.
 
 \end{itemize}
 
@@ -266,7 +270,7 @@ By comparing the exponents $a$ and $b$, we identify the dominant structural bott
     \end{itemize}
 \end{itemize}
 
-\textbf{Analysis:} Once the algorithm is parallelized, the bottleneck shifts to Dimensionality ($D$). While parallelism across $N$ effectively mitigates the impact of $K$, it cannot bypass the fundamental $\mathcal{O}(D^2)$ complexity of the Mahalanobis distance calculations. Notably, the $K$ exponent for CUDA drops to **1.15** (nearly linear), proving that the Shared-Memory reduction strategy scales exceptionally well with cluster counts, leaving dimensionality as the final hardware constraint.
+\textbf{Analysis:} Once the algorithm is parallelized, the bottleneck shifts to Dimensionality ($D$). While parallelism across $N$ effectively mitigates the impact of $K$, it cannot bypass the fundamental $\mathcal{O}(D^2)$ complexity of the Mahalanobis distance calculations. Notably, the $K$ exponent for CUDA drops to \textbf{1.15} (nearly linear), proving that the Shared-Memory reduction strategy scales exceptionally well with cluster counts, leaving dimensionality as the final hardware constraint.
 
 \section{Future Work for GPU Acceleration}
 To further optimize the CUDA implementation and move the cross-over point to lower complexities, the following architectural redesigns are proposed:
@@ -274,6 +278,7 @@ To further optimize the CUDA implementation and move the cross-over point to low
     \item \textbf{Kernel Fusion:} Combining the E-step and M-step kernels would reduce the number of passes over the $N \times D$ dataset from three to one, significantly easing the memory bandwidth bottleneck.
     \item \textbf{GPU-Native Cholesky:} Offloading the Cholesky decomposition to cuSOLVER or a custom block-level kernel would eliminate the expensive iteration-blocking \texttt{cudaMemcpy} calls and CPU-GPU synchronization.
     \item \textbf{Warp-Level Reductions:} Utilizing warp-shuffle instructions (\texttt{\_\_shfl\_down\_sync}) for local reductions within the Streaming Multiprocessor would eliminate the reliance on \texttt{atomicAdd} in shared memory, further boosting throughput in the M-Step.
+    \item \textbf{Template Instantiation:} The current E-step statically allocates registers for a maximum dimensionality (\texttt{MAX\_D=109}), forcing worst-case register pressure even for small workloads (e.g., $D=4$). Utilizing C++ templates to compile exact-sized kernels would drastically lower register pressure at small dimensions, allowing for higher active block limits and maximizing SM occupancy dynamically based on the workload size.
 \end{enumerate}
 
 \section{Conclusion}
